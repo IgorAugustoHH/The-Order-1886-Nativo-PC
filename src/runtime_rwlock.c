@@ -143,15 +143,15 @@ static ABI int32_t rw_destroy(Rwlock **handle) {
     pthread_mutex_unlock(&registry_lock); return error(e);
 }
 uintptr_t runtime_rwlock_resolve(const char *name) {
-    if (!strcmp(name,"6ULAa0fq4jA#p#J")) return (uintptr_t)rw_init;
-    if (!strcmp(name,"BB+kb08Tl9A#p#J")) return (uintptr_t)rw_destroy;
-    if (!strcmp(name,"Ox9i0c7L5w0#p#J")) return (uintptr_t)rw_read;
-    if (!strcmp(name,"mqdNorrB+gI#p#J")) return (uintptr_t)rw_write;
-    if (!strcmp(name,"XD3mDeybCnk#p#J")) return (uintptr_t)rw_tryread;
-    if (!strcmp(name,"bIHoZCTomsI#p#J")) return (uintptr_t)rw_trywrite;
-    if (!strcmp(name,"+L98PIbGttk#p#J")) return (uintptr_t)rw_unlock;
-    if (!strcmp(name,"iPtZRWICjrM#p#J")) return (uintptr_t)rw_timedread;
-    if (!strcmp(name,"adh--6nIqTk#p#J")) return (uintptr_t)rw_timedwrite;
+    if (runtime_nid_eq(name,"6ULAa0fq4jA#p#J")) return (uintptr_t)rw_init;
+    if (runtime_nid_eq(name,"BB+kb08Tl9A#p#J")) return (uintptr_t)rw_destroy;
+    if (runtime_nid_eq(name,"Ox9i0c7L5w0#p#J")) return (uintptr_t)rw_read;
+    if (runtime_nid_eq(name,"mqdNorrB+gI#p#J")) return (uintptr_t)rw_write;
+    if (runtime_nid_eq(name,"XD3mDeybCnk#p#J")) return (uintptr_t)rw_tryread;
+    if (runtime_nid_eq(name,"bIHoZCTomsI#p#J")) return (uintptr_t)rw_trywrite;
+    if (runtime_nid_eq(name,"+L98PIbGttk#p#J")) return (uintptr_t)rw_unlock;
+    if (runtime_nid_eq(name,"iPtZRWICjrM#p#J")) return (uintptr_t)rw_timedread;
+    if (runtime_nid_eq(name,"adh--6nIqTk#p#J")) return (uintptr_t)rw_timedwrite;
     return 0;
 }
 void runtime_rwlock_report(void) {

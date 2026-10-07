@@ -88,7 +88,8 @@ typedef void (*GpuRange)(uintptr_t address, uint64_t size);
 static GpuRange hook_map, hook_unmap, hook_invalidate;
 enum { HOOK_MAP, HOOK_UNMAP, HOOK_INVALIDATE };
 typedef struct { int kind; uintptr_t address; uint64_t size; } PendingHook;
-static PendingHook pending[64]; static size_t pending_count;
+/* One locked operation may touch many VMAs (The Order: 1886 batch-maps 100+ 2 MiB pages). */
+static PendingHook pending[1024]; static size_t pending_count;
 static size_t allocations, maps, flexible_maps, protects, queries;
 static uint64_t live_bytes, flexible_bytes;
 
@@ -624,6 +625,8 @@ static ABI int32_t batch_map2(BatchEntry *entries, int count, int *processed, in
         default: result=INVALID;
         }
         if (result) break;
+        /* Entries are independent: hand queued GPU notifications over between them. */
+        if (pending_count>sizeof(pending)/sizeof(*pending)/2) { write_unlock(); flush_hooks(); write_lock(); }
     }
     write_unlock();
     flush_hooks();
@@ -645,11 +648,11 @@ static const RuntimeExport exports[]={
 };
 uintptr_t runtime_memory_resolve(const char *name) {
     /* Direct-memory NIDs are exercised by test_runtime.c before names are loaded. */
-    if (!strcmp(name, "pO96TwzOm5E#p#J")) return (uintptr_t)direct_size;
-    if (!strcmp(name, "rTXw65xmLIA#p#J")) return (uintptr_t)direct_allocate;
-    if (!strcmp(name, "L-Q3LEjIbgA#p#J")) return (uintptr_t)direct_map;
-    if (!strcmp(name, "MBuItvba6z8#p#J")) return (uintptr_t)direct_release;
-    if (!strcmp(name, "cQke9UuBQOk#p#J")) return (uintptr_t)direct_unmap;
+    if (runtime_nid_eq(name, "pO96TwzOm5E#p#J")) return (uintptr_t)direct_size;
+    if (runtime_nid_eq(name, "rTXw65xmLIA#p#J")) return (uintptr_t)direct_allocate;
+    if (runtime_nid_eq(name, "L-Q3LEjIbgA#p#J")) return (uintptr_t)direct_map;
+    if (runtime_nid_eq(name, "MBuItvba6z8#p#J")) return (uintptr_t)direct_release;
+    if (runtime_nid_eq(name, "cQke9UuBQOk#p#J")) return (uintptr_t)direct_unmap;
     return RUNTIME_LOOKUP(exports,name);
 }
 /* Host-owned memory the guest can see (image, stacks, trampolines) lives in

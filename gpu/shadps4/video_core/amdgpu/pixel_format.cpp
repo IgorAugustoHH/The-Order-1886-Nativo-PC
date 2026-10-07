@@ -73,8 +73,26 @@ std::string_view NameOf(DataFormat fmt) {
         return "FormatBc6";
     case DataFormat::FormatBc7:
         return "FormatBc7";
+    case DataFormat::FormatFmask8_S2_F1:
+    case DataFormat::FormatFmask8_S4_F1:
+    case DataFormat::FormatFmask8_S8_F1:
+    case DataFormat::FormatFmask8_S2_F2:
+    case DataFormat::FormatFmask8_S4_F2:
+    case DataFormat::FormatFmask8_S4_F4:
+        return "FormatFmask8";
+    case DataFormat::FormatFmask16_S16_F1:
+    case DataFormat::FormatFmask16_S8_F2:
+        return "FormatFmask16";
+    case DataFormat::FormatFmask32_S16_F2:
+    case DataFormat::FormatFmask32_S8_F4:
+    case DataFormat::FormatFmask32_S8_F8:
+        return "FormatFmask32";
+    case DataFormat::FormatFmask64_S16_F4:
+    case DataFormat::FormatFmask64_S16_F8:
+        return "FormatFmask64";
     default:
-        UNREACHABLE();
+        // Only used for log text: an unnamed format must not stop the game.
+        return "FormatOther";
     }
 }
 
@@ -154,6 +172,22 @@ static constexpr std::array NUM_COMPONENTS = {
     2, // 39 FormatBc5
     3, // 40 FormatBc6
     4, // 41 FormatBc7
+    // bbport: FMASK (MSAA fragment pointers), stored as 8/16/32/64-bit integers
+    0, // 42
+    0, // 43
+    1, // 44 FormatFmask8_S2_F1
+    1, // 45 FormatFmask8_S4_F1
+    1, // 46 FormatFmask8_S8_F1
+    1, // 47 FormatFmask8_S2_F2
+    1, // 48 FormatFmask8_S4_F2
+    1, // 49 FormatFmask8_S4_F4
+    1, // 50 FormatFmask16_S16_F1
+    1, // 51 FormatFmask16_S8_F2
+    1, // 52 FormatFmask32_S16_F2
+    1, // 53 FormatFmask32_S8_F4
+    1, // 54 FormatFmask32_S8_F8
+    2, // 55 FormatFmask64_S16_F4
+    2, // 56 FormatFmask64_S16_F8
 };
 
 u32 NumComponents(DataFormat format) {
@@ -205,6 +239,22 @@ static constexpr std::array BITS_PER_BLOCK = {
     128, // 39 FormatBc5
     128, // 40 FormatBc6
     128, // 41 FormatBc7
+    // bbport: FMASK (MSAA fragment pointers), stored as 8/16/32/64-bit integers
+    -1, // 42
+    -1, // 43
+    8, // 44 FormatFmask8_S2_F1
+    8, // 45 FormatFmask8_S4_F1
+    8, // 46 FormatFmask8_S8_F1
+    8, // 47 FormatFmask8_S2_F2
+    8, // 48 FormatFmask8_S4_F2
+    8, // 49 FormatFmask8_S4_F4
+    16, // 50 FormatFmask16_S16_F1
+    16, // 51 FormatFmask16_S8_F2
+    32, // 52 FormatFmask32_S16_F2
+    32, // 53 FormatFmask32_S8_F4
+    32, // 54 FormatFmask32_S8_F8
+    64, // 55 FormatFmask64_S16_F4
+    64, // 56 FormatFmask64_S16_F8
 };
 
 u32 NumBitsPerBlock(DataFormat format) {
@@ -256,6 +306,22 @@ static constexpr std::array BITS_PER_ELEMENT = {
     8,   // 39 FormatBc5
     8,   // 40 FormatBc6
     8,   // 41 FormatBc7
+    // bbport: FMASK (MSAA fragment pointers), stored as 8/16/32/64-bit integers
+    -1, // 42
+    -1, // 43
+    8, // 44 FormatFmask8_S2_F1
+    8, // 45 FormatFmask8_S4_F1
+    8, // 46 FormatFmask8_S8_F1
+    8, // 47 FormatFmask8_S2_F2
+    8, // 48 FormatFmask8_S4_F2
+    8, // 49 FormatFmask8_S4_F4
+    16, // 50 FormatFmask16_S16_F1
+    16, // 51 FormatFmask16_S8_F2
+    32, // 52 FormatFmask32_S16_F2
+    32, // 53 FormatFmask32_S8_F4
+    32, // 54 FormatFmask32_S8_F8
+    64, // 55 FormatFmask64_S16_F4
+    64, // 56 FormatFmask64_S16_F8
 };
 
 u32 NumBitsPerElement(DataFormat format) {

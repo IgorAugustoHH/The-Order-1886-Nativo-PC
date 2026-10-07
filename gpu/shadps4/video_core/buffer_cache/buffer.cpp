@@ -5,6 +5,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -101,7 +102,9 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         VkBuffer unsafe_buffer{};
         VkResult result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &alloc_ci, &unsafe_buffer,
                                           &allocation, out_alloc_info);
-        ASSERT_MSG(result == VK_SUCCESS, "Failed allocating buffer with error {}",
+        // bbport: no fallback to system memory: on a 16 GB PC it starves Windows.
+        ASSERT_MSG(result == VK_SUCCESS, "Failed allocating {} MiB buffer (type {}) with error {}",
+                   buffer_ci.size >> 20, static_cast<u32>(mem_type),
                    vk::to_string(vk::Result{result}));
         buffer = vk::Buffer{unsafe_buffer};
     } else {

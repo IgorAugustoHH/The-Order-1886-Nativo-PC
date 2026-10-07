@@ -168,12 +168,12 @@ unsigned runtime_sema_waiters(uint32_t id) {
     return n;
 }
 uintptr_t runtime_sema_resolve(const char *name) {
-    if (!strcmp(name,"188x57JYp0g#p#J")) return (uintptr_t)sem_create;
-    if (!strcmp(name,"Zxa0VhQVTsk#p#J")) return (uintptr_t)sem_wait;
-    if (!strcmp(name,"4czppHBiriw#p#J")) return (uintptr_t)sem_signal;
-    if (!strcmp(name,"12wOHk8ywb0#p#J")) return (uintptr_t)sem_poll;
-    if (!strcmp(name,"4DM06U2BNEY#p#J")) return (uintptr_t)sem_cancel;
-    if (!strcmp(name,"R1Jvn8bSCW8#p#J")) return (uintptr_t)sem_delete;
+    if (runtime_nid_eq(name,"188x57JYp0g#p#J")) return (uintptr_t)sem_create;
+    if (runtime_nid_eq(name,"Zxa0VhQVTsk#p#J")) return (uintptr_t)sem_wait;
+    if (runtime_nid_eq(name,"4czppHBiriw#p#J")) return (uintptr_t)sem_signal;
+    if (runtime_nid_eq(name,"12wOHk8ywb0#p#J")) return (uintptr_t)sem_poll;
+    if (runtime_nid_eq(name,"4DM06U2BNEY#p#J")) return (uintptr_t)sem_cancel;
+    if (runtime_nid_eq(name,"R1Jvn8bSCW8#p#J")) return (uintptr_t)sem_delete;
     return 0;
 }
 void runtime_sema_report(void) {

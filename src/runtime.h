@@ -40,12 +40,20 @@ void runtime_thread_attach_main(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
 void runtime_sema_report(void);
+uintptr_t runtime_eventflag_resolve(const char *name);
+void runtime_eventflag_report(void);
 unsigned runtime_sema_waiters(uint32_t id);
 uintptr_t runtime_time_resolve(const char *name);
 void runtime_content_configure(const uint32_t values[5]);
 uintptr_t runtime_content_resolve(const char *name);
 void runtime_content_report(void);
 typedef struct { const char *name; void *function; } RuntimeExport;
+/* Imports are spelled "NID#library#module", but the library/module letters are local to each
+ * eboot's import table. A NID is a hash of the symbol name, so exports match on the NID alone. */
+static inline int runtime_nid_eq(const char *a, const char *b) {
+    while (*a && *a != '#' && *a == *b) { ++a; ++b; }
+    return (!*a || *a == '#') && (!*b || *b == '#');
+}
 #define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
 const char *runtime_symbol(const char *nid);
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);

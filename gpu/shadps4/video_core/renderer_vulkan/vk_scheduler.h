@@ -580,7 +580,8 @@ using SubmitFunc = Common::UniqueFunction<void, SubmitInfo&>;
 /// fixed storage (no allocation per command) and run in order on the recording thread.
 class RecordChunk {
 public:
-    static constexpr size_t Capacity = 128 * 1024;
+    // bbport: The Order: 1886 binds large descriptor tables per draw; 128 KiB was too small.
+    static constexpr size_t Capacity = 1024 * 1024;
 
     /// Returns false (and leaves `func` untouched) when the chunk has no room.
     template <typename Func>

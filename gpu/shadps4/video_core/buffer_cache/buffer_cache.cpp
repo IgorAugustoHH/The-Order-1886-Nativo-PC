@@ -5,6 +5,8 @@
 #include <array>
 #include <map>
 #include <unordered_map>
+#include <atomic>
+#include <vector>
 #include <algorithm>
 #include <bit>
 #include <cstdlib>
@@ -296,6 +298,18 @@ void PrintBufferStats() {
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
                                                         bool is_written, bool is_texel_buffer) {
+    // bbport: garbage V#s (shader resource tables the recompiler could not resolve, The Order:
+    // 1886) ask for 2-4 GiB ranges; synchronizing them exhausts VRAM and system RAM. No real
+    // PS4 buffer binding is that large: synchronize at most 256 MiB.
+    constexpr u32 MaxBinding = 256_MB;
+    if (size > MaxBinding) {
+        static std::atomic<int> warned{0};
+        if (warned.fetch_add(1) < 8) {
+            LOG_WARNING(Render, "Buffer binding of {} MiB at {:#x} limited to {} MiB", size >> 20,
+                        device_addr, MaxBinding >> 20);
+        }
+        size = MaxBinding;
+    }
     const bool stats = BufferStatsEnabled();
     if (stats) {
         PrintBufferStats();
@@ -537,6 +551,36 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
 const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::BufferCopy> copies,
                                         size_t total_size_bytes) {
     if (copies.empty()) {
+        return nullptr;
+    }
+    // bbport: a raw buffer over a whole mapping (The Order: 1886 binds 4 GiB ranges) would need
+    // one staging allocation of that size. Upload it in batches of at most 64 MiB, each copied
+    // to the arena here; nullptr tells the caller there is nothing left to copy.
+    constexpr u64 MaxStaging = 64_MB;
+    if (total_size_bytes > MaxStaging) {
+        std::vector<vk::BufferCopy> batch;
+        u64 batch_bytes = 0;
+        const auto flush = [&] {
+            if (const Buffer* staging = UploadCopies(arena, batch, batch_bytes)) {
+                runtime.CopyBuffer(staging, arena, batch);
+            }
+            batch.clear();
+            batch_bytes = 0;
+        };
+        for (const auto& copy : copies) {
+            for (u64 done = 0; done < copy.size;) {
+                const u64 part = std::min<u64>(copy.size - done, MaxStaging - batch_bytes);
+                batch.emplace_back(batch_bytes, copy.dstOffset + done, part);
+                batch_bytes += part;
+                done += part;
+                if (batch_bytes == MaxStaging) {
+                    flush();
+                }
+            }
+        }
+        if (!batch.empty()) {
+            flush();
+        }
         return nullptr;
     }
     BbStats::buffer_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);

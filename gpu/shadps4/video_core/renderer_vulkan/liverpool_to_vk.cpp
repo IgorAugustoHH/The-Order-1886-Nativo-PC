@@ -329,7 +329,8 @@ vk::SamplerAddressMode ClampMode(AmdGpu::ClampMode mode) {
     case AmdGpu::ClampMode::ClampBorder:
         return vk::SamplerAddressMode::eClampToBorder;
     default:
-        UNREACHABLE();
+        // bbport: garbage sampler descriptors (unresolved SRT reads) must not stop the game.
+        return vk::SamplerAddressMode::eClampToEdge;
     }
 }
 
@@ -352,7 +353,8 @@ vk::CompareOp DepthCompare(AmdGpu::DepthCompare comp) {
     case AmdGpu::DepthCompare::Always:
         return vk::CompareOp::eAlways;
     default:
-        UNREACHABLE();
+        // bbport: garbage sampler descriptors (unresolved SRT reads) must not stop the game.
+        return vk::CompareOp::eAlways;
     }
 }
 
@@ -365,7 +367,8 @@ vk::Filter Filter(AmdGpu::Filter filter) {
     case AmdGpu::Filter::AnisoLinear:
         return vk::Filter::eLinear;
     default:
-        UNREACHABLE();
+        // bbport: garbage sampler descriptors (unresolved SRT reads) must not stop the game.
+        return vk::Filter::eLinear;
     }
 }
 
@@ -378,7 +381,8 @@ vk::SamplerReductionMode FilterMode(AmdGpu::FilterMode mode) {
     case AmdGpu::FilterMode::Max:
         return vk::SamplerReductionMode::eMax;
     default:
-        UNREACHABLE();
+        // bbport: garbage sampler descriptors (unresolved SRT reads) must not stop the game.
+        return vk::SamplerReductionMode::eWeightedAverage;
     }
 }
 
@@ -391,7 +395,8 @@ vk::SamplerMipmapMode MipFilter(AmdGpu::MipFilter filter) {
     case AmdGpu::MipFilter::None:
         return vk::SamplerMipmapMode::eNearest;
     default:
-        UNREACHABLE();
+        // bbport: garbage sampler descriptors (unresolved SRT reads) must not stop the game.
+        return vk::SamplerMipmapMode::eNearest;
     }
 }
 
@@ -406,7 +411,8 @@ vk::BorderColor BorderColor(AmdGpu::BorderColor color) {
     case AmdGpu::BorderColor::Custom:
         return vk::BorderColor::eFloatCustomEXT;
     default:
-        UNREACHABLE();
+        // bbport: out-of-range values come from garbage sampler descriptors.
+        return vk::BorderColor::eFloatTransparentBlack;
     }
 }
 
@@ -425,7 +431,8 @@ vk::ComponentSwizzle ComponentSwizzle(AmdGpu::CompSwizzle comp_swizzle) {
     case AmdGpu::CompSwizzle::Alpha:
         return vk::ComponentSwizzle::eA;
     default:
-        UNREACHABLE();
+        // bbport: reserved selects (2, 3) come from garbage descriptors; read them as zero.
+        return vk::ComponentSwizzle::eZero;
     }
 }
 
@@ -748,6 +755,34 @@ std::span<const SurfaceFormatInfo> SurfaceFormats() {
                                 vk::Format::eBc7UnormBlock),
         CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc7, AmdGpu::NumberFormat::Srgb,
                                 vk::Format::eBc7SrgbBlock),
+        // FMASK (MSAA fragment pointers; The Order: 1886 uses 4x MSAA). Vulkan has no FMASK, so it
+        // is an integer image of the same size; zero contents point every sample at fragment 0.
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S2_F1, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S4_F1, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S8_F1, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S2_F2, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S4_F2, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask8_S4_F4, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR8Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask16_S16_F1, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR16Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask16_S8_F2, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR16Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask32_S16_F2, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR32Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask32_S8_F4, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR32Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask32_S8_F8, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR32Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask64_S16_F4, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR32G32Uint),
+        CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatFmask64_S16_F8, AmdGpu::NumberFormat::Uint,
+                                vk::Format::eR32G32Uint),
     };
     return formats;
 }
@@ -780,11 +815,24 @@ static auto surface_format_table = []() constexpr {
     return result;
 }();
 
+// bbport: FMASK is raw fragment-pointer data whatever number format the descriptor names
+// (The Order: 1886 reads it as Snorm and Uint); the table only has the Uint entries.
+static AmdGpu::NumberFormat FmaskNumberFormat(AmdGpu::DataFormat data_format,
+                                              AmdGpu::NumberFormat num_format) {
+    const u32 value = static_cast<u32>(data_format);
+    return value >= static_cast<u32>(AmdGpu::DataFormat::FormatFmask8_S2_F1) &&
+                   value <= static_cast<u32>(AmdGpu::DataFormat::FormatFmask64_S16_F8)
+               ? AmdGpu::NumberFormat::Uint
+               : num_format;
+}
+
 vk::Format TrySurfaceFormat(AmdGpu::DataFormat data_format, AmdGpu::NumberFormat num_format) {
+    num_format = FmaskNumberFormat(data_format, num_format);
     return surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)];
 }
 
 vk::Format SurfaceFormat(AmdGpu::DataFormat data_format, AmdGpu::NumberFormat num_format) {
+    num_format = FmaskNumberFormat(data_format, num_format);
     vk::Format result = surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)];
     bool found =
         result != vk::Format::eUndefined || data_format == AmdGpu::DataFormat::FormatInvalid;

@@ -71,19 +71,20 @@ static ABI int32_t param_int(uint32_t id,int32_t *out) {
 }
 static ABI int32_t addon_list(uint32_t service,void *list,uint32_t capacity,uint32_t *hits) {
     require_initialized();
-    if (service) { fputs("STOP: nonzero AppContent service label unsupported\n",stderr); exit(21); }
     if ((!capacity || !list) && !hits) return PARAMETER;
-    /* No add-ons are mounted by this provider. Never touch unused list slots. */
+    /* No add-ons are mounted by this provider, under any service label (The Order: 1886
+     * asks with a nonzero one). Never touch unused list slots. */
+    if (service) printf("Runtime: AppContent add-on list for service label %u: none\n",service);
     if (hits) *hits=0;
     ++lists; return 0;
 }
 uintptr_t runtime_content_resolve(const char *name) {
-    if (!strcmp(name,"g8cM39EUZ6o#M#N")) return (uintptr_t)module_load;
-    if (!strcmp(name,"fMP5NHUOaMk#M#N")) return (uintptr_t)module_loaded;
-    if (!strcmp(name,"eR2bZFAAU0Q#M#N")) return (uintptr_t)module_unload;
-    if (!strcmp(name,"R9lA82OraNs#c#d")) return (uintptr_t)content_init;
-    if (!strcmp(name,"99b82IKXpH4#c#d")) return (uintptr_t)param_int;
-    if (!strcmp(name,"xnd8BJzAxmk#c#d")) return (uintptr_t)addon_list;
+    if (runtime_nid_eq(name,"g8cM39EUZ6o#M#N")) return (uintptr_t)module_load;
+    if (runtime_nid_eq(name,"fMP5NHUOaMk#M#N")) return (uintptr_t)module_loaded;
+    if (runtime_nid_eq(name,"eR2bZFAAU0Q#M#N")) return (uintptr_t)module_unload;
+    if (runtime_nid_eq(name,"R9lA82OraNs#c#d")) return (uintptr_t)content_init;
+    if (runtime_nid_eq(name,"99b82IKXpH4#c#d")) return (uintptr_t)param_int;
+    if (runtime_nid_eq(name,"xnd8BJzAxmk#c#d")) return (uintptr_t)addon_list;
     return 0;
 }
 void runtime_content_report(void) {

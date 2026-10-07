@@ -94,6 +94,40 @@ inline AmdGpu::CbDbExtent Rasterizer::DbExtent() const {
 }
 
 namespace {
+/// Tile modes 27-30 are unused on Liverpool: a T# with one is not a real texture (a garbage
+/// descriptor, e.g. when the SRT walker could not resolve the shader's resource table).
+bool IsKnownTileMode(AmdGpu::TileMode mode) {
+    const u32 value = static_cast<u32>(mode);
+    return value <= static_cast<u32>(AmdGpu::TileMode::Thick3DXThick) ||
+           mode == AmdGpu::TileMode::DisplayLinearGeneral;
+}
+/// Approximate guest size of a T#'s top mip in bytes; 0 when the format has no size.
+u64 EstimateImageBytes(const AmdGpu::Image& t) {
+    const u32 bits = AmdGpu::NumBitsPerBlock(t.GetDataFmt());
+    if (bits == 0 || bits > 128) {
+        return 0;
+    }
+    const bool block = AmdGpu::IsBlockCoded(t.GetDataFmt());
+    u64 w = u64(t.width) + 1, h = u64(t.height) + 1;
+    if (block) {
+        w = (w + 3) / 4;
+        h = (h + 3) / 4;
+    }
+    const u64 slices =
+        t.GetType() == AmdGpu::ImageType::Color3D ? u64(t.depth) + 1 : u64(t.NumLayers());
+    return w * h * slices * bits / 8;
+}
+/// bbport: garbage T#s (unresolved shader resource tables, The Order: 1886) describe images of
+/// hundreds of MiB to GiBs, often at unmapped addresses; creating them exhausts VRAM and RAM.
+bool IsPlausibleImage(const AmdGpu::Image& t, Core::MemoryManager* memory) {
+    constexpr u64 MaxImageBytes = 512ull << 20;
+    const u64 bytes = EstimateImageBytes(t);
+    if (bytes > MaxImageBytes) {
+        return false;
+    }
+    const u64 probe = std::min<u64>(bytes, 16ull << 20);
+    return probe == 0 || memory->ClampRangeSize(t.Address(), probe) == probe;
+}
 /// magic_enum::enum_contains, from a table: it scans every enumerator (per texture per draw).
 bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
     static const auto tables = [] {
@@ -111,7 +145,22 @@ bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
         return t;
     }();
     const u32 d = static_cast<u32>(data_fmt), n = static_cast<u32>(num_fmt);
-    return d < 256 && n < 256 && tables.first[d] && tables.second[n];
+    if (!(d < 256 && n < 256 && tables.first[d] && tables.second[n])) {
+        return false;
+    }
+    // bbport: a data format the surface table knows, read with a number format it has no Vulkan
+    // equivalent for (The Order: 1886: 32_32_32 Snorm), is a garbage T#. Formats with no table
+    // entry at all (depth 24_8, ...) are created elsewhere and stay accepted.
+    if (vk::Format(LiverpoolToVK::TrySurfaceFormat(data_fmt, num_fmt)) != vk::Format::eUndefined) {
+        return true;
+    }
+    for (u32 other = 0; other < 16; ++other) {
+        if (LiverpoolToVK::TrySurfaceFormat(data_fmt, AmdGpu::NumberFormat(other)) !=
+            vk::Format::eUndefined) {
+            return false;
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -1478,7 +1527,8 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         const auto num_fmt = tsharp.GetNumberFmt();
         if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
             !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-            !IsKnownFormat(data_fmt, num_fmt)) {
+            !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
+            !IsPlausibleImage(tsharp, memory)) {
             continue; // null descriptor
         }
         const auto& entry =
@@ -2251,7 +2301,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         }
 
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-            !IsKnownFormat(data_fmt, num_fmt)) {
+            !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
+            !IsPlausibleImage(tsharp, memory)) {
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}",

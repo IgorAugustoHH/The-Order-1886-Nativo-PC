@@ -351,6 +351,27 @@ static ABI int32_t thread_rename(GuestThread *t,const char *name) {
     return 0;
 }
 static ABI int32_t thread_equal(GuestThread *a,GuestThread *b) { return a==b; }
+/* SceKernelSchedParam is a single int priority; recorded like scePthreadSetprio. */
+static ABI int32_t thread_get_param(GuestThread *t,int *policy,int *param) {
+    if (!find_thread(t)) return ERR(3);
+    if (!policy || !param) return ERR(22);
+    *policy=t->attr.policy; *param=t->attr.prio; return 0;
+}
+static ABI int32_t thread_set_param(GuestThread *t,int policy,const int *param) {
+    if (!find_thread(t)) return ERR(3);
+    if (!param || policy<1 || policy>3) return ERR(22);
+    t->attr.policy=policy; t->attr.prio=*param; return 0;
+}
+/* Condition attributes: runtime_mutex.c ignores them, so a non-NULL handle is enough. */
+static ABI int32_t condattr_init(void **out) {
+    if (!out) return ERR(22);
+    *out=calloc(1,16);
+    return *out ? 0 : ERR(12);
+}
+static ABI int32_t condattr_destroy(void **attr) {
+    if (!attr || !*attr) return ERR(22);
+    free(*attr); *attr=NULL; return 0;
+}
 
 /* POSIX (libScePosix) variants return positive errno values. */
 static int32_t posix(int32_t r) { return r ? (int32_t)((uint32_t)r&0xffff) : 0; }
@@ -362,6 +383,7 @@ static ABI int32_t posix_attr_set_param(ThreadAttr **a,const int *p) { return po
 static ABI int32_t posix_create(GuestThread **t,ThreadAttr **a,GuestEntry e,void *arg) { return posix(create(t,a,e,arg,"posix")); }
 static ABI int32_t posix_create_name(GuestThread **t,ThreadAttr **a,GuestEntry e,void *arg,const char *name) { return posix(create(t,a,e,arg,name)); }
 static ABI int32_t posix_join(GuestThread *t,void **r) { return posix(thread_join(t,r)); }
+static ABI int32_t posix_set_param(GuestThread *t,int p,const int *v) { return posix(thread_set_param(t,p,v)); }
 
 uintptr_t runtime_thread_resolve(const char *name) {
     static const struct { const char *nid; void *fn; } table[]={
@@ -384,9 +406,13 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"euKRgm0Vn2M#I#J",posix_attr_set_param}, {"OxhIB8LB-PQ#I#J",posix_create},
         {"Jmi+9w9u0E4#I#J",posix_create_name}, {"h9CcP3J0oVM#I#J",posix_join},
         {"FJrT5LuUBAU#I#J",thread_exit},
+        /* The Order: 1886 */
+        {"P41kTWUS3EI#",thread_get_param}, {"oIRFTjoILbg#",thread_set_param},
+        {"Xs9hdiD7sAA#",posix_set_param},
+        {"m5-2bsNfv7s#",condattr_init}, {"waPcxYiR3WA#",condattr_destroy},
     };
     for (size_t i=0;i<sizeof(table)/sizeof(*table);++i)
-        if (!strcmp(name,table[i].nid)) return (uintptr_t)table[i].fn;
+        if (runtime_nid_eq(name,table[i].nid)) return (uintptr_t)table[i].fn;
     return 0;
 }
 void runtime_thread_report(void) {

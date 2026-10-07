@@ -365,6 +365,35 @@ static ABI int32_t mouse_read(int32_t handle,unsigned char *data,int32_t count) 
 static ABI int32_t mouse_close(int32_t handle) { (void)handle; return 0; }
 static ABI int32_t audio_in_open(void) { return AUDIO_IN_NOT_OPENED; }
 
+/* ---- Extra entry points used by The Order: 1886 ---- */
+static ABI int32_t msg_close(void) { if (dialogs[1].initialized) dialogs[1].status=3; return 0; }
+static ABI int32_t save_close(void) { if (dialogs[2].initialized) dialogs[2].status=3; return 0; }
+/* SceSaveDataDialogResult starts with mode, result, buttonId: an opened dialog finished with OK. */
+static ABI int32_t save_result(int32_t *result) { if (result) { result[1]=0; result[2]=0; } return 0; }
+static ABI int32_t save_ready(void) { return 1; }
+static ABI int32_t playgo_eta(int32_t handle,const uint16_t *ids,uint32_t count,int64_t *eta) {
+    (void)ids; (void)count;
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    if (!eta) return PLAYGO_BAD_POINTER;
+    *eta=0; return 0;
+}
+/* ScePlayGoProgress: bytes installed, total bytes; equal means complete. */
+static ABI int32_t playgo_progress(int32_t handle,const uint16_t *ids,uint32_t count,uint64_t *progress) {
+    (void)ids; (void)count;
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    if (!progress) return PLAYGO_BAD_POINTER;
+    progress[0]=progress[1]=1; return 0;
+}
+static ABI int32_t playgo_close(int32_t handle) { if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE; playgo_handle=0; return 0; }
+/* No add-on content is installed: mount and entitlement queries report "not found". */
+#define APP_CONTENT_NOT_FOUND ((int32_t)0x80D90005)
+static ABI int32_t addcont_none(void) { return APP_CONTENT_NOT_FOUND; }
+/* SceImeKeyboardResourceIdArray: user id + 5 resource ids; no USB keyboard is attached. */
+static ABI int32_t ime_keyboard_ids(int32_t user,uint32_t *ids) {
+    if (!ids) return (int32_t)0x80BC0004; /* IME INVALID_ADDRESS */
+    ids[0]=(uint32_t)user; memset(ids+1,0,5*sizeof(*ids)); return 0;
+}
+
 
 static const RuntimeExport exports[]={
     {"sceUserServiceInitialize",user_initialize}, {"sceUserServiceTerminate",user_terminate},
@@ -480,5 +509,19 @@ static const RuntimeExport exports[]={
     {"sceAudioInOpen",audio_in_open},
     {"sceDiscMapIsRequestOnHDD",discmap_on_hdd}, {"sceDiscMap_8A828CAEE7EDD5E9",discmap_8a82},
     {"sceVoiceInit",ok_void}, {"sceVoiceEnd",ok_void},
+    {"sceMsgDialogClose",msg_close}, {"sceMsgDialogProgressBarSetMsg",ok_void},
+    {"sceMsgDialogProgressBarSetValue",ok_void},
+    {"sceSaveDataDialogClose",save_close}, {"sceSaveDataDialogGetResult",save_result},
+    {"sceSaveDataDialogIsReadyToDisplay",save_ready}, {"sceSaveDataDialogProgressBarSetValue",ok_void},
+    {"scePlayGoGetEta",playgo_eta}, {"scePlayGoGetProgress",playgo_progress}, {"scePlayGoPrefetch",ok_void},
+    {"scePlayGoClose",playgo_close}, {"scePlayGoTerminate",ok_void},
+    {"sceImeUpdate",ok_void}, {"sceImeKeyboardOpen",ok_void}, {"sceImeKeyboardClose",ok_void},
+    {"sceImeKeyboardGetResourceId",ime_keyboard_ids},
+    {"sceNpTrophyDestroyHandle",ok_void}, {"sceNpTrophyDestroyContext",ok_void},
+    {"sceAppContentAddcontMount",addcont_none}, {"sceAppContentAddcontUnmount",ok_void},
+    {"sceAppContentGetEntitlementKey",addcont_none},
+    {"sceScreenShotEnable",ok_void}, {"sceScreenShotDisable",ok_void}, {"sceVideoRecordingSetInfo",ok_void},
+    {"sceVideoOutSetWindowModeMargins",ok_void},
+    {"sceKernelChmod",ok_void}, {"sceKernelUtimes",ok_void}, {"sceKernelMlock",ok_void},
 };
 uintptr_t runtime_services_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
