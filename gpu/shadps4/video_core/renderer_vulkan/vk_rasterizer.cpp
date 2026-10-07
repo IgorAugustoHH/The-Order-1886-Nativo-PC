@@ -107,6 +107,12 @@ bool IsKnownTileMode(AmdGpu::TileMode mode) {
 }
 /// Approximate guest size of a T#'s top mip in bytes; 0 when the format has no size.
 u64 EstimateImageBytes(const AmdGpu::Image& t) {
+    // The per-format tables end at the FMASK formats; past them there is no size (and asking
+    // NumBitsPerBlock asserts).
+    if (static_cast<u32>(t.GetDataFmt()) >
+        static_cast<u32>(AmdGpu::DataFormat::FormatFmask64_S16_F8)) {
+        return 0;
+    }
     const u32 bits = AmdGpu::NumBitsPerBlock(t.GetDataFmt());
     if (bits == 0 || bits > 128) {
         return 0;
