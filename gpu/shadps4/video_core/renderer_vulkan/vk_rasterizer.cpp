@@ -108,7 +108,9 @@ u64 EstimateImageBytes(const AmdGpu::Image& t) {
         return 0;
     }
     const bool block = AmdGpu::IsBlockCoded(t.GetDataFmt());
-    u64 w = u64(t.width) + 1, h = u64(t.height) + 1;
+    // The guest size follows the pitch (row stride), not the width: garbage T#s carry pitches far
+    // above their width (The Order: 1886: 29x18 images sized at 1 GiB).
+    u64 w = std::max<u64>(u64(t.width) + 1, t.Pitch()), h = u64(t.height) + 1;
     if (block) {
         w = (w + 3) / 4;
         h = (h + 3) / 4;

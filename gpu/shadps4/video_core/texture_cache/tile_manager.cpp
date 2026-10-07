@@ -1,3 +1,4 @@
+#include <atomic>
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -224,9 +225,26 @@ void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::Descript
     });
 }
 
+// bbport: no real PS4 image comes near 512 MiB; a bigger guest_size is a garbage descriptor
+// (The Order: 1886 asked for a 3 GiB detile staging buffer and ran the 6 GB VRAM out). Skipping
+// the (de)tiling leaves that image's contents wrong instead of stopping the game.
+static bool ImplausibleTilingSize(const ImageInfo& info, const char* what) {
+    constexpr u64 MaxBytes = 512ull << 20;
+    if (info.guest_size <= MaxBytes) {
+        return false;
+    }
+    static std::atomic<int> warned{0};
+    if (warned.fetch_add(1) < 16) {
+        LOG_WARNING(Render_Vulkan, "{} skipped for a {} MiB image at {:#x}: {}x{}x{}, {} layers, {} bits",
+                    what, info.guest_size >> 20, info.guest_address, info.size.width,
+                    info.size.height, info.size.depth, info.resources.layers, info.num_bits);
+    }
+    return true;
+}
+
 std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* in_buffer,
                                                        u64 in_offset, const ImageInfo& info) {
-    if (!info.props.is_tiled) {
+    if (!info.props.is_tiled || ImplausibleTilingSize(info, "Detile")) {
         return {in_buffer, in_offset};
     }
 
@@ -279,6 +297,9 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
 void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buffer_copies,
                             const VideoCore::Buffer* out_buffer, u64 out_offset) {
     const auto& info = in_image.info;
+    if (info.props.is_tiled && ImplausibleTilingSize(info, "Tile")) {
+        return;
+    }
     if (!info.props.is_tiled) {
         for (auto& copy : buffer_copies) {
             copy.bufferOffset += out_offset;

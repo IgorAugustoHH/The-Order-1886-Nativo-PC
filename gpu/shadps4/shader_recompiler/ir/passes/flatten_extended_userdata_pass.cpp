@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -27,8 +28,12 @@
 
 using namespace Xbyak::util;
 
-static Xbyak::CodeGenerator g_srt_codegen(32_MB);
+// bbport: The Order: 1886 filled 32 MiB with SRT walkers ("code is too big"): walkers are
+// deduplicated below, and the (contiguous, for the signal handler) region is larger.
+static Xbyak::CodeGenerator g_srt_codegen(128_MB);
 static const u8* g_srt_codegen_start = nullptr;
+/// Walker code -> its first copy: shaders recompiled with the same resource table reuse it.
+static std::unordered_map<std::string_view, const u8*> g_srt_walkers;
 
 namespace Shader {
 
@@ -649,6 +654,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
     }
 
+    const size_t start_size = c.getSize();
     info.srt_info.walker_func = c.getCurr<PFN_SrtWalker>();
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
@@ -662,6 +668,20 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
 
     info.srt_info.walker_func_size =
         c.getCurr() - reinterpret_cast<const u8*>(info.srt_info.walker_func);
+
+    // bbport: an identical walker already exists: use it and give the space back. The code has
+    // no absolute addresses of its own (only guest pointers loaded at run time), so equal bytes
+    // mean an equal walker.
+    {
+        const auto* code = reinterpret_cast<const char*>(info.srt_info.walker_func);
+        const std::string_view key{code, info.srt_info.walker_func_size};
+        if (const auto it = g_srt_walkers.find(key); it != g_srt_walkers.end()) {
+            info.srt_info.walker_func = reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(it->second));
+            c.setSize(start_size);
+        } else {
+            g_srt_walkers.emplace(key, reinterpret_cast<const u8*>(code));
+        }
+    }
 
     if (EmulatorSettings.IsDumpShaders()) {
         DumpSrtProgram(info, reinterpret_cast<const u8*>(info.srt_info.walker_func),

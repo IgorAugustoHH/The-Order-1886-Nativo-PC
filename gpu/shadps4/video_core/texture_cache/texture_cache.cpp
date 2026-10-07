@@ -764,6 +764,19 @@ void TextureCache::RefreshImage(Image& image) {
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
     }
+    // bbport: an image claiming more than 512 MiB of guest memory is a garbage descriptor
+    // (The Order: 1886: a 3 GiB upload exhausted VRAM). Leave its contents alone.
+    if (image.info.guest_size > (512ull << 20)) {
+        static int warned = 0;
+        if (warned++ < 16) {
+            LOG_WARNING(Render_Vulkan, "Not uploading a {} MiB image at {:#x} ({}x{}x{}, {} bits)",
+                        image.info.guest_size >> 20, image.info.guest_address,
+                        image.info.size.width, image.info.size.height, image.info.size.depth,
+                        image.info.num_bits);
+        }
+        image.flags &= ~ImageFlagBits::Dirty;
+        return;
+    }
     BbStats::Timer timer{BbStats::t_refresh};
 
     RENDERER_TRACE;

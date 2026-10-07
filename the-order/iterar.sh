@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Um ciclo de desenvolvimento: nomes NID -> compila -> roda o jogo -> mostra onde parou.
-# Uso (Git Bash): bash iterar.sh [segundos]   (padrão: 90 s rodando)
+# Uso (Git Bash): bash iterar.sh [segundos]   (padrão: 90 s; 0 = sem limite)
 set -u
 RAIZ="/b/Projeto the order 1886"
 BB="$RAIZ/bbport-base"
