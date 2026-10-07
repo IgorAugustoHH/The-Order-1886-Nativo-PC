@@ -5,6 +5,7 @@
 
 #include "bbport_toggles.h"
 #include "common/assert.h"
+#include "common/cache_gc.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
@@ -886,6 +887,12 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
     return it->second.Handle();
 }
 
+// bbport: what fills VRAM (The Order: 1886 ran out of a 6 GB card): registered image bytes
+// (guest sizes) and buffer cache blocks made resident, which are never released.
+static std::atomic<u64> g_image_bytes{0};
+static std::atomic<u64> g_image_count{0};
+extern std::atomic<u64> g_bb_resident_buffer_bytes;
+
 void TextureCache::RegisterImage(ImageId image_id) {
     BbStats::images_registered.fetch_add(1, std::memory_order_relaxed);
     Image& image = slot_images[image_id];
@@ -893,7 +900,12 @@ void TextureCache::RegisterImage(ImageId image_id) {
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
     ++registry_generation;
-    total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    // Heap usage includes buffers and driver allocations; do not mix it with guest sizes.
+    if (!instance.CanReportMemoryUsage()) {
+        total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    }
+    g_image_bytes += Common::AlignUp(image.info.guest_size, 1024);
+    ++g_image_count;
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     image.lru_touched_tick = gc_tick;
     ForEachPage(image.info.guest_address, image.info.guest_size,
@@ -907,7 +919,11 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     image.flags &= ~ImageFlagBits::Registered;
     ++registry_generation;
     lru_cache.Free(image.lru_id);
-    total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    if (!instance.CanReportMemoryUsage()) {
+        total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    }
+    g_image_bytes -= Common::AlignUp(image.info.guest_size, 1024);
+    --g_image_count;
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {
         const auto page_it = page_table.find(page);
         if (page_it == nullptr) {
@@ -1045,7 +1061,7 @@ void TextureCache::GarbageCollectImages() {
             const char* env = std::getenv("BB_GC_BUDGET_MB");
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
-        if (instance.IsIntegrated() || forced_budget) {
+        {
             const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
@@ -1058,28 +1074,25 @@ void TextureCache::GarbageCollectImages() {
         return;
     }
     std::scoped_lock lock{mutex};
-    bool pressured = false;
-    bool aggresive = false;
-    u64 ticks_to_destroy = 0;
-    size_t num_deletions = 0;
-
-    const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_memory >= pressure_gc_memory;
-        aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
-        ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
-        num_deletions = aggresive ? 40 : pressured ? 20 : 10;
-    };
+    const bool pressured = total_used_memory >= pressure_gc_memory;
+    const bool critical = total_used_memory >= critical_gc_memory;
+    // Greater pressure must allow younger (but never current-submission) candidates.
+    const u64 age = critical ? 4 : pressured ? 16 : 160;
+    if (gc_tick < age) {
+        return;
+    }
+    u64 skipped_tiled = 0;
     const auto clean_up = [&](ImageId image_id) {
-        if (num_deletions == 0) {
-            return true;
-        }
-        --num_deletions;
         auto& image = slot_images[image_id];
+        if (image.binding.is_bound || image.scene_proxy || image.usage.vo_surface ||
+            image.tick_accessed_last == scheduler.CurrentTick()) {
+            return false;
+        }
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
         if (tiled && download) {
             // This is a workaround for now. We can't handle non-linear image downloads.
+            ++skipped_tiled;
             return false;
         }
         if (download && !pressured) {
@@ -1094,39 +1107,37 @@ void TextureCache::GarbageCollectImages() {
         }
         ++gc_evictions;
         FreeImage(image_id);
-        if (total_used_memory < critical_gc_memory) {
-            if (aggresive) {
-                num_deletions >>= 2;
-                aggresive = false;
-                return false;
-            }
-            if (pressured && total_used_memory < pressure_gc_memory) {
-                num_deletions >>= 1;
-                pressured = false;
-            }
-        }
-        return false;
+        return true;
     };
 
-    // Try to remove anything old enough and not high priority.
-    configure(false);
-    lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-
-    if (total_used_memory >= critical_gc_memory) {
-        // If we are still over the critical limit, run an aggressive GC
-        configure(true);
-        lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
+    const size_t removed = Common::CollectLru(lru_cache, gc_tick - age,
+                                              critical ? 64 : pressured ? 32 : 10, clean_up);
+    const auto now = std::chrono::steady_clock::now();
+    if (critical && removed && now - gc_drain_time >= std::chrono::milliseconds(100)) {
+        // Unregistering an image does not free its allocation until its GPU work retires.
+        // Only stall at the critical watermark, not on ordinary cache maintenance.
+        scheduler.Finish();
+        scheduler.PopPendingOperations();
+        gc_drain_time = now;
     }
     // bbport: evictions under memory pressure, at most every 5 s (BB_FRAME_STATS or not).
     if (pressured || gc_downloads != 0) {
-        const auto now = std::chrono::steady_clock::now();
         if (now - gc_report_time >= std::chrono::seconds(5)) {
-            std::printf("Texture cache: memory pressure, %llu of %llu MiB (critical %llu): "
-                        "%llu images evicted, %llu written back since the last report\n",
+            if (instance.CanReportMemoryUsage()) {
+                total_used_memory = instance.GetDeviceMemoryUsage();
+            }
+            std::printf("Texture cache: heap usage %llu MiB, pressure %llu MiB (critical %llu): "
+                        "%llu images evicted, %llu written back; registered guest images "
+                        "%llu MiB (%llu images), sparse buffers %llu MiB, "
+                        "tiled writebacks skipped this sweep %llu\n",
                         (unsigned long long)(total_used_memory >> 20),
                         (unsigned long long)(pressure_gc_memory >> 20),
                         (unsigned long long)(critical_gc_memory >> 20),
-                        (unsigned long long)gc_evictions, (unsigned long long)gc_downloads);
+                        (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
+                        (unsigned long long)(g_image_bytes.load() >> 20),
+                        (unsigned long long)g_image_count.load(),
+                        (unsigned long long)(g_bb_resident_buffer_bytes.load() >> 20),
+                        (unsigned long long)skipped_tiled);
             gc_report_time = now;
             gc_evictions = gc_downloads = 0;
         }

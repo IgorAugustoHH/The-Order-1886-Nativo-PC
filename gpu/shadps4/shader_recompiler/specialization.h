@@ -215,8 +215,19 @@ struct StageSpecialization {
         return info != nullptr;
     }
 
+    // Runtime matching is directional: an unbound resource can accept several compiled
+    // permutations. Disk-cache identity must be exact and tied to its stored index.
+    bool SameCacheKey(const StageSpecialization& other) const {
+        return Valid() && other.Valid() && runtime_info == other.runtime_info &&
+               bitset == other.bitset && start == other.start &&
+               fetch_shader_data == other.fetch_shader_data && vs_attribs == other.vs_attribs &&
+               buffers == other.buffers && images == other.images && fmasks == other.fmasks &&
+               samplers == other.samplers;
+    }
+
     bool operator==(const StageSpecialization& other) const {
-        if (!Valid()) {
+        if (!Valid() || !other.Valid() || buffers.size() != other.buffers.size() ||
+            images.size() != other.images.size() || samplers.size() != other.samplers.size()) {
             return false;
         }
 

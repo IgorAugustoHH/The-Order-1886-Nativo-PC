@@ -13,6 +13,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
+#include "video_core/buffer_cache/sparse_backing_pool.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 namespace AmdGpu {
@@ -171,6 +172,8 @@ private:
     u64 arena_page_bits{MAX_ARENA_PAGE_BITS};
     u64 arena_page_size{u64{1} << MAX_ARENA_PAGE_BITS};
     u64 num_arena_pages{u64{1} << (ADDRESS_SPACE_BITS - MAX_ARENA_PAGE_BITS)};
+    // Declared before arenas: buffers are destroyed before their backing allocations.
+    std::unique_ptr<SparseBackingPool> backing_pool;
     std::deque<Buffer> arenas;
     std::vector<ArenaBinds> pending_binds;
     Vulkan::Semaphore memory_semaphore;
@@ -178,11 +181,13 @@ private:
     struct Backing : public Interval {
         vk::DeviceMemory memory;
         u64 offset;
+        u32 block_shift;
         constexpr bool CanMergeWith(const Backing& other) const noexcept {
-            return memory == other.memory && offset + (end - start) == other.offset;
+            return memory == other.memory && block_shift == other.block_shift &&
+                   offset + ((end - start) << block_shift) == other.offset;
         }
         constexpr Backing SubRange(u64 a, u64 b) const noexcept {
-            return {{a, b}, memory, offset + (a - start)};
+            return {{a, b}, memory, offset + ((a - start) << block_shift), block_shift};
         }
     };
     IntervalList<Backing> resident_ranges;

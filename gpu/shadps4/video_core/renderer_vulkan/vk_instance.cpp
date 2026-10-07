@@ -667,7 +667,8 @@ void Instance::CreateAllocator() {
     };
 
     const VmaAllocatorCreateInfo allocator_info = {
-        .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+        .flags = VmaAllocatorCreateFlags(VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
+                     (supports_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0)),
         .physicalDevice = physical_device,
         .device = *device,
         .pVulkanFunctions = &functions,

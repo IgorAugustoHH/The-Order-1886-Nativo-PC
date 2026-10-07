@@ -95,6 +95,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
                        reqs.memoryTypeBits)
             .value();
 
+    backing_pool = std::make_unique<SparseBackingPool>(instance.GetAllocator());
+    std::printf("Buffer cache: pooled sparse backing (VMA), block %u KiB\n", block_size >> 10);
+
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * num_arena_pages) * sizeof(vk::DeviceAddress);
     fault_manager = std::make_unique<FaultManager>(instance, scheduler, *this, block_shift,
@@ -469,6 +472,8 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     return new_arena;
 }
 
+std::atomic<u64> g_bb_resident_buffer_bytes{0};
+
 void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_block) {
     u32 resident_blocks{};
     IntervalList bind_ranges;
@@ -482,17 +487,49 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     }
     BbStats::Timer timer{BbStats::t_resident};
 
-    const vk::MemoryAllocateInfo alloc_info = {
-        .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = arena_memory_type_index,
-    };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    const u64 bytes = u64{resident_blocks} << block_shift;
+    VmaAllocationInfo allocation_info{};
+    auto result = backing_pool->Allocate(bytes, block_size, arena_memory_type_index,
+                                         allocation_info);
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        // Image destruction is deferred until submitted work completes. Drain it once
+        // before retrying; never switch to a host-memory heap on the 16 GB machine.
+        scheduler.Finish();
+        scheduler.PopPendingOperations();
+        result = backing_pool->Allocate(bytes, block_size, arena_memory_type_index,
+                                        allocation_info);
+    }
+    if (result != VK_SUCCESS) {
+        std::fprintf(stderr, "Sparse backing allocation failed: request=%llu KiB, "
+                     "resident=%llu MiB, suballocations=%zu, heap=%llu MiB, budget=%llu MiB\n",
+                     (unsigned long long)(bytes >> 10),
+                     (unsigned long long)(backing_pool->Bytes() >> 20),
+                     backing_pool->AllocationCount(),
+                     (unsigned long long)(instance.GetDeviceMemoryUsage() >> 20),
+                     (unsigned long long)(instance.GetDeviceMemoryBudgetNow() >> 20));
+    }
+    Vulkan::Check(vk::Result{result});
+    const vk::DeviceMemory device_memory{allocation_info.deviceMemory};
+    // Count only successful allocations; offsets below include the VMA suballocation.
+    {
+        const u64 total = g_bb_resident_buffer_bytes.fetch_add(bytes) + bytes;
+        static std::atomic<int> big_logged{0};
+        if (bytes >= 32_MB && big_logged.fetch_add(1) < 24) {
+            std::printf("Buffer cache: %llu MiB made resident at %#llx (request %#llx-%#llx), "
+                        "%llu MiB in total\n",
+                        (unsigned long long)(bytes >> 20),
+                        (unsigned long long)(first_block << block_shift),
+                        (unsigned long long)(first_block << block_shift),
+                        (unsigned long long)((last_block + 1) << block_shift),
+                        (unsigned long long)(total >> 20));
+        }
+    }
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
         staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
 
-    u64 memory_offset{};
+    u64 memory_offset = allocation_info.offset;
     ArenaBinds* binds = BindsForArena(arena);
     auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
     u64 offset = staging.offset;
@@ -502,6 +539,7 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         backing.end = range.end;
         backing.memory = device_memory;
         backing.offset = memory_offset;
+        backing.block_shift = block_shift;
         resident_ranges.Add(backing);
 
         LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);

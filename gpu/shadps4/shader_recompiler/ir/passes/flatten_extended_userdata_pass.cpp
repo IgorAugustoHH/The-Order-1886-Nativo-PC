@@ -8,6 +8,7 @@
 #include <xbyak/xbyak.h>
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
+#include "common/try_emit.h"
 #include "common/decoder.h"
 #include "common/io_file.h"
 #include "common/logging/log.h"
@@ -654,7 +655,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         return;
     }
 
-    if (!PushPtr(c, pass_info, off_dw)) {
+    if (!Common::TryEmit(c, [&] { return PushPtr(c, pass_info, off_dw); })) {
         LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
         return;
     }
@@ -670,7 +671,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
-            if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
+            if (!Common::TryEmit(c, [&] {
+                    return ComputeOffset(c, r10d, pass_info, src_off_dw);
+                })) {
                 LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
                 continue;
             }

@@ -13,7 +13,7 @@
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
-static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
+static constexpr u32 ShaderMetaVersion = 8u; // auxiliador: transactional SRT walker emission
 static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
@@ -281,24 +281,22 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
     } else {
-        const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
-        if (it != it_pgm.value()->modules.end()) {
-            // A matching permutation is valid only at its original index. A different index means
-            // the store holds entries from more than one cache generation, so this pipeline is
-            // left to compile at runtime.
-            const auto idx = std::distance(it_pgm.value()->modules.begin(), it);
-            if (perm_idx != idx) {
+        const auto& modules = it_pgm.value()->modules;
+        if (perm_idx < modules.size() && modules[perm_idx].module) {
+            if (!modules[perm_idx].spec.SameCacheKey(spec)) {
                 LOG_WARNING(Render_Vulkan,
-                            "Cached permutation {} of {}_{:x} conflicts with index {}, skipping "
-                            "preload",
-                            perm_idx, program->info.hw_stage, program->info.pgm_hash, idx);
+                            "Cached permutation {} of {}_{:x} has conflicting metadata at its "
+                            "own index, skipping preload", perm_idx, program->info.hw_stage,
+                            program->info.pgm_hash);
                 return false;
             }
-            module = it->module;
+            module = modules[perm_idx].module;
         } else {
             module = CompileSPV(spv, instance.GetDevice());
         }
     }
+    spec.info = &it_pgm.value()->info;
+    sel.runtime_infos[stage] = spec.runtime_info;
     it_pgm.value()->InsertPermut(module, std::move(spec), perm_idx);
 
     sel.infos[stage] = &it_pgm.value()->info;
