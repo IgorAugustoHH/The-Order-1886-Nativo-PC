@@ -58,3 +58,14 @@ Ainda: GpuCommandProcessor ~69% de um núcleo (investigar).
 Compilar (`bash build.sh` no MSYS2 CLANG64) e rodar com `BB_GAME_DIR` apontando para `CUSA00785`:
 o loader para na primeira importação sem implementação ("STOP: first unsupported PS4 import") e
 vamos implementando uma a uma.
+
+## Estado em 2026-10-07 (fim do dia)
+- NEW GAME: save `Playthrough01` criado; cutscene inicial roda ~2 min; menu de pausa funciona.
+- Queda no driver NVIDIA (nvoglv64.dll, vkCmdEndRendering): flip de CPU gravava direto enquanto a thread
+  DrawRec ainda gravava → `DrainDrawPipe()` no início de `Presenter::PrepareFrame` (testar várias vezes).
+- Camadas Vulkan implícitas desligadas no iterar.sh (`VK_LOADER_LAYERS_DISABLE=~implicit~`).
+- Relatório de falha agora mostra nome da thread e pilha (RtlCaptureStackBackTrace); símbolos com
+  `llvm-symbolizer --obj=out/bb-probe.exe 0x140000000+offset`.
+- PRÓXIMO: run33 caiu com buffer de 3 GB DeviceLocal (ErrorOutOfDeviceMemory) logo após rastrear uma
+  região de 3 GB. Origem provável: arena do buffer cache (`BufferCache::GetArena`, buffer_cache.cpp:418)
+  ou região mapeada enorme. Limitar/espalhar a arena para caber na VRAM de 6 GB.

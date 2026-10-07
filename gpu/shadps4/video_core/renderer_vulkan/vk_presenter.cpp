@@ -356,6 +356,11 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // bbport: BB_FRAME_DUMP_TRIGGER=<file>: when the file exists it is removed and this frame's
     // guest display buffer and presented image are written to BB_DUMP_DIR (default out/dump)
     // as raw 32-bit pixels (menus and movies included; the upscaler dumps scene frames only).
+    // bbport: CPU-submitted (non-EOP) flips run between GPU commands (Liverpool::SendCommand),
+    // possibly while the draw recording thread still records into the same command buffer;
+    // recording the frame directly then raced it inside the driver (NVIDIA: nvoglv64.dll crash
+    // in vkCmdEndRendering, The Order: 1886). Let that thread finish first (no-op elsewhere).
+    rasterizer->DrainDrawPipe();
     static const char* frame_dump_trigger = std::getenv("BB_FRAME_DUMP_TRIGGER");
     static int frame_dump_index = 0;
     const bool frame_dump = frame_dump_trigger && std::remove(frame_dump_trigger) == 0;

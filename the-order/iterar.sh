@@ -12,6 +12,10 @@ if ! MSYSTEM=CLANG64 /b/msys64/usr/bin/bash.exe -lc "cd \"$BB\" && MSYS2_ROOT=/b
     grep -iE "error|undefined" "$RAIZ/work/build.log" | head -20
     echo "BUILD FALHOU (work/build.log)"; exit 1
 fi
+# Camadas Vulkan implícitas (OBS, RivaTuner, TikTok LIVE, Steam, Epic) se injetam em todo app Vulkan;
+# com elas o driver da NVIDIA caía no início (nvoglv64.dll). Desligadas só para o jogo.
+# BB_COM_CAMADAS=1 bash iterar.sh  -> mantém as camadas (para comparar).
+[ -z "${BB_COM_CAMADAS:-}" ] && export VK_LOADER_LAYERS_DISABLE='~implicit~'
 cd "$BB" && BB_GAME_DIR="B:/Projeto the order 1886/CUSA00785" BB_DATA_DIR="B:/Projeto the order 1886/work" \
     MSYS2_ROOT="B:/msys64" timeout "${1:-90}" python run.py >"$LOG" 2>&1
 R=$?

@@ -125,6 +125,20 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
         fprintf(stderr,"Fault: exception 0x%08lx at %s (thread %lu)\n",record->ExceptionCode,where,GetCurrentThreadId());
     fprintf(stderr,"  rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx\n  rsi=%016llx rdi=%016llx rbp=%016llx rsp=%016llx\n",
             c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp);
+    /* Thread name and an unwind-table backtrace: driver code (nvoglv64.dll) keeps no frame
+     * pointers, so the rbp chain below stops at once; the x64 unwind data does not. */
+    {
+        typedef HRESULT (WINAPI *GetDescription)(HANDLE,PWSTR *);
+        GetDescription get=(GetDescription)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),"GetThreadDescription");
+        PWSTR name=NULL;
+        if (get && SUCCEEDED(get(GetCurrentThread(),&name)) && name) { fprintf(stderr,"  thread name: %ls\n",name); LocalFree(name); }
+        void *frames[48];
+        USHORT n=RtlCaptureStackBackTrace(0,48,frames,NULL);
+        for (USHORT i=0;i<n;++i) {
+            describe_address(where,sizeof(where),(uintptr_t)frames[i]);
+            fprintf(stderr,"  @%u %s\n",i,where);
+        }
+    }
     if (gpu_enabled) bbgpu_dump_guest_writes(info);
     /* rbp chain (guest and host code keep frame pointers). */
     uintptr_t rbp=(uintptr_t)c->Rbp;
