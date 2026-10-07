@@ -2191,7 +2191,19 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                      reinterpret_cast<const void*>(vsharp.base_address),
                                      memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
             }
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+            // bbport: a V# above 256 MiB is a garbage sharp (The Order: 1886 bound 355 MiB
+            // over partly unmapped memory on every draw; synchronizing it with VRAM at its
+            // budget froze Windows). No PS4 buffer binding is that large: bind null.
+            constexpr u64 MaxPlausibleBinding = 256_MB;
+            const bool implausible = vsharp.GetSize() > MaxPlausibleBinding;
+            if (implausible) {
+                static std::atomic<int> implausible_logged{0};
+                if (implausible_logged.fetch_add(1) < 8) {
+                    LOG_WARNING(Render, "Binding null for a {} MiB V# at {:#x} in shader {:#x}",
+                                vsharp.GetSize() >> 20, vsharp.base_address, stage.pgm_hash);
+                }
+            }
+            if (vsharp.base_address == 0 || vsharp.GetSize() == 0 || implausible) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
                 const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());

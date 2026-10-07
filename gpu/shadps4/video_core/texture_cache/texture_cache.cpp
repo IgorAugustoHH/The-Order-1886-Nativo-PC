@@ -1064,9 +1064,12 @@ void TextureCache::GarbageCollectImages() {
         {
             const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
-                trigger_gc_memory = budget / 10 * 7;
-                pressure_gc_memory = budget / 100 * 85;
-                critical_gc_memory = budget / 100 * 95;
+                // bbport: margin below the budget. Past it WDDM moves allocations to system
+                // memory; on a 6 GB card with 16 GB of RAM (The Order: 1886) that froze
+                // Windows at 4.98 of 4.95 GB.
+                trigger_gc_memory = budget / 100 * 60;
+                pressure_gc_memory = budget / 100 * 75;
+                critical_gc_memory = budget / 100 * 85;
             }
         }
     }

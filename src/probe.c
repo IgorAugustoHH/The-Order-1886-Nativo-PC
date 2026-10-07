@@ -391,6 +391,36 @@ void runtime_restart(void) {
 #endif
 }
 
+#ifdef _WIN32
+/* bbport: when free physical memory runs out (GPU allocations past the VRAM budget moved
+ * to system memory, on a 16 GB machine) Windows stops responding and needs a hard reset.
+ * Quit first, with the reason in the log. BB_RAM_GUARD_MB=N: limit in MiB (0: off). */
+static DWORD WINAPI ram_guard(LPVOID arg) {
+    const unsigned long long limit = (unsigned long long)(uintptr_t)arg << 20;
+    unsigned low = 0, ticks = 0;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    for (;;) {
+        MEMORYSTATUSEX status = {.dwLength = sizeof(status)};
+        if (GlobalMemoryStatusEx(&status)) {
+            if (++ticks % 120 == 0)
+                printf("Memory: system RAM %llu MiB free of %llu, commit %llu MiB free\n",
+                       status.ullAvailPhys >> 20, status.ullTotalPhys >> 20,
+                       status.ullAvailPageFile >> 20);
+            low = status.ullAvailPhys < limit ? low + 1 : 0;
+            if (low >= 4) {
+                fprintf(stderr, "STOP: system RAM almost exhausted (%llu MiB free, guard %llu MiB);"
+                        " quitting before Windows stops responding\n",
+                        status.ullAvailPhys >> 20, limit >> 20);
+                fflush(stderr); fflush(stdout);
+                TerminateProcess(GetCurrentProcess(), 3);
+            }
+        }
+        Sleep(250);
+    }
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
@@ -448,6 +478,18 @@ int main(int argc, char **argv) {
     SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
     AddVectoredExceptionHandler(1, vectored_fault);
     SetUnhandledExceptionFilter(unhandled_fault);
+    {
+        const char *guard = getenv("BB_RAM_GUARD_MB");
+        const unsigned long guard_mb = guard ? strtoul(guard, NULL, 10) : 700;
+        if (guard_mb) {
+            HANDLE thread = CreateThread(NULL, 64 * 1024, ram_guard, (LPVOID)(uintptr_t)guard_mb,
+                                         0, NULL);
+            if (thread) {
+                SetThreadDescription(thread, L"bb:RamGuard");
+                CloseHandle(thread);
+            }
+        }
+    }
     if (getenv("BB_STRICT_HANDLES")) {
         PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
         strict.RaiseExceptionOnInvalidHandleReference=1;
