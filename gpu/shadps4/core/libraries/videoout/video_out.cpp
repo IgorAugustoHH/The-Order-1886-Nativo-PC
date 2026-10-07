@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
+#include <cstdlib>
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -139,8 +141,17 @@ s32 PS4_SYSV_ABI sceVideoOutRegisterBuffers(s32 handle, s32 startIndex, void* co
 }
 
 s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
-    LOG_TRACE(Lib_VideoOut, "called");
-    driver->GetPort(handle)->flip_rate = rate;
+    // bbport: rate N shows a flip every N+1 vblanks (1 = 30 FPS at 60 Hz). The Order: 1886 is a
+    // 30 FPS game; log its requests. BB_FLIP_RATE=<n> overrides them (0 = up to the refresh
+    // rate; the game's animation/physics timing at more than 30 FPS is untested).
+    static const char* forced = std::getenv("BB_FLIP_RATE");
+    const s32 applied = forced ? std::atoi(forced) : rate;
+    auto* port = driver->GetPort(handle);
+    if (port->flip_rate != applied) {
+        std::printf("VideoOut: game flip rate %d (one flip every %d vblanks)%s\n", rate, rate + 1,
+                    forced ? ", overridden by BB_FLIP_RATE" : "");
+    }
+    port->flip_rate = applied;
     return ORBIS_OK;
 }
 
