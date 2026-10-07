@@ -495,6 +495,8 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::ReadFirstLane: // bbport: see ComputeOffset
     case IR::Opcode::ReadLane:
     case IR::Opcode::Phi:
+    case IR::Opcode::BitCastU32F32:
+    case IR::Opcode::BitCastF32U32:
     case IR::Opcode::GetUserData:
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
@@ -523,6 +525,17 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         c.mov(reg, off_dw.U32());
         return true;
     }
+    // bbport: phis can form cycles through other phis (loops); unbounded recursion overflowed the
+    // stack and the game vanished without a report. Real offset expressions are shallow.
+    static thread_local int depth = 0;
+    if (depth >= 32) {
+        LOG_ERROR(Render_Recompiler, "SRT offset expression too deep (cycle?)");
+        return false;
+    }
+    struct DepthGuard {
+        DepthGuard() { ++depth; }
+        ~DepthGuard() { --depth; }
+    } depth_guard;
     auto inst = off_dw.Inst();
     switch (inst->GetOpcode()) {
     case IR::Opcode::GetUserData:
@@ -573,6 +586,10 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         return true;
     // bbport: resource-table offsets The Order: 1886 could not walk (17,000 failures in a session:
     // null descriptors, missing textures, a depth-of-field mask blurring the whole screen).
+    case IR::Opcode::BitCastU32F32:
+    case IR::Opcode::BitCastF32U32:
+        // Reinterpreting the same 32 bits: the offset is the source's bits.
+        return ComputeOffset(c, reg, pass_info, inst->Arg(0));
     case IR::Opcode::ReadFirstLane:
     case IR::Opcode::ReadLane:
         // An SGPR copy of a vector register lane. Offsets into a resource table are uniform

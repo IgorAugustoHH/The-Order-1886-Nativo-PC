@@ -356,7 +356,8 @@ constexpr NumberConversion MapNumberConversion(const NumberFormat num_fmt,
         case DataFormat::Format16_16_16_16:
             return NumberConversion::Sint16ToSnormNz;
         default:
-            UNREACHABLE_MSG("data_fmt = {}", u32(data_fmt));
+            // bbport: other formats with SnormNz come from garbage sharps; no conversion.
+            return NumberConversion::None;
         }
     }
     default:
