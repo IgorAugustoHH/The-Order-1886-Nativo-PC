@@ -844,3 +844,8 @@
 {"Fc8qxlKINYQ#","sceVideoRecordingSetInfo"},
 /* Computed from the runtime export tables by tools/gen_import_names.py. */
 {"dKadqZFgKKQ#","sceImeKeyboardGetResourceId"},
+/* Computed from the runtime export tables by tools/gen_import_names.py. */
+{"+0EDo7YzcoU#","futimes"},
+{"2G6i6hMIUUY#","getdents"},
+{"NLq2b1jOaN0#","sceKernelFutimes"},
+{"j2AIqSqJP0w#","sceKernelGetdents"},

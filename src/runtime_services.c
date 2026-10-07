@@ -206,7 +206,11 @@ static int32_t dialog_term(int i) {
     static ABI int32_t tag##_open(const void *p) { (void)p; return dialog_open(i); } \
     static ABI int32_t tag##_status(void) { return dialog_status(i); } \
     static ABI int32_t tag##_term(void) { return dialog_term(i); }
-DIALOG(msg,1) DIALOG(save,2) DIALOG(profile,3) DIALOG(commerce,4)
+DIALOG(msg,1) DIALOG(profile,3) DIALOG(commerce,4)
+/* SaveDataDialog opens with its own mode handling (save_open_mode, below). */
+static ABI int32_t save_init(void) { return dialog_init(2); }
+static ABI int32_t save_status(void) { return dialog_status(2); }
+static ABI int32_t save_term(void) { return dialog_term(2); }
 static ABI int32_t profile_result(void *result) { if (result) memset(result,0,4); return 0; }
 /* ImeDialog: text typed on the keyboard into the game window (title bar shows it).
  * OrbisImeDialogParam: user, type, languages(8), enter label, method, filter,
@@ -367,9 +371,26 @@ static ABI int32_t audio_in_open(void) { return AUDIO_IN_NOT_OPENED; }
 
 /* ---- Extra entry points used by The Order: 1886 ---- */
 static ABI int32_t msg_close(void) { if (dialogs[1].initialized) dialogs[1].status=3; return 0; }
+/* SaveDataDialog with modes. OrbisSaveDataDialogParam: BaseParam (48 bytes), size, mode, ...
+ * Modes: 1 list, 2 user message, 3 system message, 4 error code, 5 progress bar. The Order's
+ * autosave opens a progress bar, saves, then closes it: the dialog must stay Running (2) until
+ * sceSaveDataDialogClose. Finishing at once with button 0 (invalid) made the game reopen it
+ * forever. Message dialogs finish at once with YES/OK (button 1). */
+static int save_mode;
+static ABI int32_t save_open_mode(const unsigned char *param) {
+    if (!dialogs[2].initialized) return DIALOG_NOT_INITIALIZED;
+    save_mode=0;
+    if (param) memcpy(&save_mode,param+52,4);
+    dialogs[2].status=save_mode==5 ? 2 : 3;
+    printf("Runtime: SaveDataDialog opened (mode %d): %s\n",save_mode,save_mode==5 ? "progress bar until closed" : "answered YES/OK");
+    return 0;
+}
 static ABI int32_t save_close(void) { if (dialogs[2].initialized) dialogs[2].status=3; return 0; }
-/* SceSaveDataDialogResult starts with mode, result, buttonId: an opened dialog finished with OK. */
-static ABI int32_t save_result(int32_t *result) { if (result) { result[1]=0; result[2]=0; } return 0; }
+/* SceSaveDataDialogResult: mode, result, buttonId (1 = OK/YES), ... */
+static ABI int32_t save_result(int32_t *result) {
+    if (result) { result[0]=save_mode; result[1]=0; result[2]=1; }
+    return 0;
+}
 static ABI int32_t save_ready(void) { return 1; }
 static ABI int32_t playgo_eta(int32_t handle,const uint16_t *ids,uint32_t count,int64_t *eta) {
     (void)ids; (void)count;
@@ -491,7 +512,7 @@ static const RuntimeExport exports[]={
     {"sceCommonDialogInitialize",common_init},
     {"sceMsgDialogInitialize",msg_init}, {"sceMsgDialogOpen",msg_open},
     {"sceMsgDialogUpdateStatus",msg_status}, {"sceMsgDialogTerminate",msg_term},
-    {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
+    {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open_mode},
     {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},
     {"sceNpProfileDialogInitialize",profile_init}, {"sceNpProfileDialogOpen",profile_open},
     {"sceNpProfileDialogUpdateStatus",profile_status}, {"sceNpProfileDialogTerminate",profile_term},

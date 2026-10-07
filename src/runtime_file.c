@@ -466,6 +466,12 @@ PAIR(lseek,(int fd,int64_t o,int w),(fd,o,w))
 PAIR(fstat,(int fd,GuestStat *s),(fd,s))
 PAIR(stat,(const char *p,GuestStat *s),(p,s))
 PAIR(getdents,(int fd,char *b,uint64_t n,int64_t *base),(fd,b,n,base))
+/* getdents is getdirentries without the base pointer (The Order: 1886 lists its save folder). */
+static int64_t do_getdents3(int fd,char *b,uint64_t n) { return do_getdents(fd,b,n,NULL); }
+PAIR(getdents3,(int fd,char *b,uint64_t n),(fd,b,n))
+/* File times are not tracked by the host save files: setting them succeeds. */
+static int64_t do_futimes(int fd,const void *times) { (void)fd; (void)times; return 0; }
+PAIR(futimes,(int fd,const void *times),(fd,times))
 PAIR(rename,(const char *a,const char *b),(a,b))
 PAIR(ftruncate,(int fd,int64_t l),(fd,l))
 PAIR(truncate,(const char *p,int64_t l),(p,l))
@@ -492,6 +498,8 @@ static const RuntimeExport exports[]={
     {"sceKernelFstat",sce_fstat}, {"fstat",posix_fstat},
     {"sceKernelStat",sce_stat}, {"stat",posix_stat},
     {"sceKernelGetdirentries",sce_getdents}, {"getdirentries",posix_getdents},
+    {"sceKernelGetdents",sce_getdents3}, {"getdents",posix_getdents3},
+    {"sceKernelFutimes",sce_futimes}, {"futimes",posix_futimes},
     {"sceKernelRename",sce_rename}, {"rename",posix_rename},
     {"sceKernelFtruncate",sce_ftruncate}, {"ftruncate",posix_ftruncate},
     {"sceKernelTruncate",sce_truncate}, {"truncate",posix_truncate},

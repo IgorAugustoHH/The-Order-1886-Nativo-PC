@@ -106,7 +106,37 @@ static ABI uint64_t tsc_frequency(void) {
 uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
+/* Guest idle loops (The Order: 1886's "Task Kernel" job workers) poll for work with yield or
+ * very short sleeps. On PS4 each worker owns a core; on a PC four such loops kept four cores at
+ * 100% on the title screen (i5-10400F at 100 °C). A single yield stays a yield; a burst of them
+ * on one thread sleeps 0.5 ms per call, so an idle worker wakes within half a millisecond. */
+#define RELAX_BURST 32
+#define RELAX_GAP_NS 2000000
+#define RELAX_NAP_NS 500000
+static uint64_t relax_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000000000+(uint64_t)t.tv_nsec;
+}
+void runtime_relax(void) {
+    static _Thread_local uint64_t last;
+    static _Thread_local unsigned burst;
+    uint64_t now=relax_now();
+    burst=now-last<RELAX_GAP_NS ? burst+1 : 0;
+    last=now;
+    static int disabled=-1;
+    if (disabled<0) disabled=getenv("BB_NO_RELAX")!=NULL; /* A/B comparison */
+    if (burst<RELAX_BURST || disabled) { sched_yield(); return; }
+#ifdef _WIN32
+    compat_sleep_ns(RELAX_NAP_NS);
+#else
+    struct timespec t={0,RELAX_NAP_NS};
+    nanosleep(&t,NULL);
+#endif
+    last=relax_now();
+}
 static int sleep_ns(uint64_t ns) {
+    if (ns<50000) { runtime_relax(); return 0; } /* sleep(0)/usleep(<50 us): a yield */
 #ifdef _WIN32
     compat_sleep_ns(ns);
 #else
@@ -155,7 +185,7 @@ static ABI int64_t posix_time(int64_t *out) { int64_t t=(int64_t)time(NULL); if 
 /* ---- process ---- */
 static ABI int32_t get_pagesize(void) { return PAGE; }
 static ABI int32_t get_pid(void) { return 1000; }
-static ABI int32_t yield(void) { sched_yield(); return 0; }
+static ABI int32_t yield(void) { runtime_relax(); return 0; }
 static ABI __attribute__((noreturn)) void hard_exit(int status) {
     printf("Runtime: guest requested _exit(%d)\n",status);
     runtime_report();

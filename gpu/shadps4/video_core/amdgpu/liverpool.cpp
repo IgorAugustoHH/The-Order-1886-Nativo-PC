@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <thread>
 #include <pthread.h>
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -102,6 +103,24 @@ void Liverpool::ProcessCommands() {
     }
 }
 
+#ifdef _WIN32
+extern "C" void compat_sleep_ns(uint64_t ns); // high-resolution timer (src/compat_win.c)
+#endif
+
+/// bbport: queues waiting on guest memory (WaitRegMem/Rewind) yield and are resumed at once;
+/// with nothing completing, the command processor spun at ~85% of a core. After 1 ms without
+/// a finished submit, each further round sleeps 100 us.
+static void IdleBackoff(std::chrono::steady_clock::time_point& last_progress) {
+    if (std::chrono::steady_clock::now() - last_progress < std::chrono::milliseconds(1)) {
+        return;
+    }
+#ifdef _WIN32
+    compat_sleep_ns(100'000);
+#else
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+#endif
+}
+
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
 #ifndef _WIN32
@@ -132,6 +151,7 @@ void Liverpool::Process(std::stop_token stoken) {
         VideoCore::StartCapture();
 
         curr_qid = -1;
+        auto last_progress = std::chrono::steady_clock::now();
 
         while (num_submits || num_commands) {
             ProcessCommands();
@@ -159,6 +179,9 @@ void Liverpool::Process(std::stop_token stoken) {
                 --num_submits;
                 std::scoped_lock lock2{submit_mutex};
                 submit_cv.notify_all();
+                last_progress = std::chrono::steady_clock::now();
+            } else {
+                IdleBackoff(last_progress);
             }
         }
 

@@ -1,0 +1,166 @@
+"""Descobre o nome das importações que faltam no runtime: o NID é um hash SHA-1 (com sal fixo)
+do nome do símbolo, então testamos nomes conhecidos da API do PS4."""
+import base64
+import hashlib
+import json
+from pathlib import Path
+
+AQUI = Path(__file__).parent
+
+
+def nid(nome):
+    d = hashlib.sha1(nome.encode() + bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')).digest()[:8][::-1]
+    return base64.b64encode(d).decode().rstrip('=').replace('/', '-')
+
+
+SCE = """
+sceNpTrophyCreateContext sceNpTrophyCreateHandle sceNpTrophyRegisterContext sceNpTrophyUnlockTrophy
+sceNpTrophyDestroyContext sceNpTrophyDestroyHandle sceNpTrophyGetTrophyUnlockState sceNpTrophyGetGameInfo
+sceNpTrophyShowTrophyList sceNpTrophyAbortHandle
+scePlayGoInitialize scePlayGoOpen scePlayGoGetLocus scePlayGoGetToDoList scePlayGoClose scePlayGoTerminate
+scePlayGoGetChunkId scePlayGoSetLanguageMask scePlayGoGetLanguageMask scePlayGoGetProgress scePlayGoGetEta
+scePlayGoSetInstallSpeed scePlayGoGetInstallSpeed scePlayGoPrefetch scePlayGoSetToDoList scePlayGoRequestNextChunk
+sceImeDialogInit sceImeDialogGetStatus sceImeDialogGetResult sceImeDialogTerm sceImeDialogAbort sceImeUpdate
+sceImeOpen sceImeClose sceImeKeyboardOpen sceImeKeyboardClose sceImeSetText sceImeSetCaret sceImeParamInit
+sceImeKeyboardGetInfo sceImeDialogGetPanelSize
+sceMsgDialogInitialize sceMsgDialogOpen sceMsgDialogUpdateStatus sceMsgDialogGetResult sceMsgDialogTerminate
+sceMsgDialogClose sceMsgDialogGetStatus sceMsgDialogProgressBarSetValue sceMsgDialogProgressBarInc
+sceMsgDialogProgressBarSetMsg
+sceSaveDataDialogInitialize sceSaveDataDialogOpen sceSaveDataDialogUpdateStatus sceSaveDataDialogGetResult
+sceSaveDataDialogTerminate sceSaveDataDialogClose sceSaveDataDialogGetStatus sceSaveDataDialogProgressBarSetValue
+sceSaveDataDialogProgressBarInc sceSaveDataDialogIsReadyToDisplay
+sceScreenShotEnable sceScreenShotDisable sceScreenShotSetParam sceScreenShotSetOverlayImage
+sceScreenShotSetOverlayImageWithOrigin sceScreenShotCapture sceScreenShotDisableNotification
+sceScreenShotEnableNotification
+sceVideoRecordingSetInfo sceVideoRecordingOpen sceVideoRecordingClose sceVideoRecordingQueryMemSize
+sceVideoRecordingStart sceVideoRecordingStop sceVideoRecordingGetInfo
+sceAppContentGetAddcontInfo sceAppContentAddcontMount sceAppContentAddcontUnmount sceAppContentTemporaryDataMount
+sceAppContentTemporaryDataMount2 sceAppContentTemporaryDataUnmount sceAppContentGetEntitlementKey
+sceAppContentTemporaryDataFormat sceAppContentDownloadDataGetAvailableSpaceKb sceAppContentDownloadDataFormat
+sceAppContentTemporaryDataGetAvailableSpaceKb sceAppContentGetAddcontInfoList sceAppContentAppParamGetInt
+sceAppContentAddcontDelete sceAppContentAddcontShrink sceAppContentSmallSharedDataMount
+sceAppContentGetAddcontDownloadProgress sceAppContentRequestPatchInstall
+sceAudioOutSetVolume sceAudioOutGetPortState sceAudioOutGetLastOutputTime sceAudioOutOutputs sceAudioOutClose
+sceAudioOutGetSystemState sceAudioOutSetMixLevelPadSpk sceAudioOutSetPortConnections sceAudioOutGetHandleStatusInfo
+sceAudioOutSetMainOutput
+sceVideoOutSetWindowModeMargins sceVideoOutGetResolutionStatus sceVideoOutSetGamma sceVideoOutAdjustColor
+sceVideoOutColorSettingsSetGamma_ sceVideoOutGetDeviceCapabilityInfo sceVideoOutIsFlipPending
+sceVideoOutGetVblankStatus sceVideoOutSetBufferAttribute sceVideoOutGetEventId sceVideoOutGetEventData
+sceVideoOutDeleteFlipEvent sceVideoOutDeleteVblankEvent sceVideoOutAddVblankEvent sceVideoOutGetFlipStatus
+sceVideoOutWaitVblank sceVideoOutCursorEnable sceVideoOutConfigureOutputMode_
+sceAjmBatchJobControlBufferRa sceAjmBatchJobRunBufferRa sceAjmBatchJobRunSplitBufferRa sceAjmBatchJobInlineBuffer
+sceAjmBatchStartBuffer sceAjmBatchWait sceAjmBatchCancel sceAjmBatchErrorDump sceAjmInstanceCreate
+sceAjmInstanceDestroy sceAjmModuleRegister sceAjmModuleUnregister sceAjmInitialize sceAjmFinalize
+sceAjmInstanceCodecType sceAjmDecAt9ParseConfigData sceAjmMemoryRegister sceAjmMemoryUnregister sceAjmStrError
+sceAjmBatchJobGetStatistics sceAjmInstanceExtend sceAjmInstanceSwitch sceAjmBatchJobClearContext
+"""
+
+KERNEL = """
+GetCpumode IsNeoMode GetProcessTime GetProcessTimeCounter GetProcessTimeCounterFrequency ReadTsc GetTscFrequency
+Usleep Sleep Nanosleep Getdents Getdirentries Stat Fstat Lseek Read Write Open Close Mkdir Rename Unlink Rmdir
+Fsync Ftruncate Truncate Pread Pwrite Writev Readv CreateEventFlag WaitEventFlag SetEventFlag ClearEventFlag
+PollEventFlag DeleteEventFlag CancelEventFlag CreateEqueue DeleteEqueue WaitEqueue AddUserEvent AddUserEventEdge
+TriggerUserEvent AddTimerEvent DeleteUserEvent GetEventUserData GetEventId GetEventFilter GetEventData AddReadEvent
+AddHRTimerEvent VirtualQuery MapFlexibleMemory MapNamedFlexibleMemory MapNamedDirectMemory Mprotect
+SetVirtualRangeName BatchMap BatchMap2 AvailableDirectMemorySize AvailableFlexibleMemorySize ReserveVirtualRange
+GetModuleInfoFromAddr GetCompiledSdkVersion IsAddressSanitizerEnabled Dlsym LoadStartModule StopUnloadModule
+GetModuleList GetModuleInfo DebugRaiseException DebugRaiseExceptionOnReleaseMode ClockGettime ClockGetres
+Gettimeofday Gettimezone ConvertLocaltimeToUtc ConvertUtcToLocaltime GetGPI SetGPO Sync CheckReachability
+GetSystemSwVersion UuidCreate IsStack Mlock Munlock Mtypeprotect MemoryPoolExpand MemoryPoolReserve
+MemoryPoolCommit MemoryPoolDecommit MemoryPoolBatch QueryMemoryProtection GetDirectMemoryType
+CheckedReleaseDirectMemory MapDirectMemory2 GetFlexibleMemorySize ReleaseFlexibleMemory AllocateMainDirectMemory
+GetLibkernelTextLocation GetThreadName GetCurrentCpu Error GetFsSandboxRandomWord IsInSandbox Getpid GetProcParam
+Utimes CreateSema WaitSema SignalSema PollSema DeleteSema CancelSema Socket Connect
+ReportUnpatchedFunctionCall InternalMemoryGetModuleSegmentInfo SetThreadDtors GetSanitizerMallocReplaceExternal
+GetSanitizerNewReplaceExternal Mmap Munmap MapDirectMemory AllocateDirectMemory ReleaseDirectMemory
+GetDirectMemorySize Chmod Fchmod GetModuleInfoForUnwind GetAppInfo SetProcessName
+"""
+
+PTHREAD = """
+Setaffinity Getaffinity Setprio Getprio Rename AttrSetaffinity AttrSetinheritsched AttrSetschedparam
+AttrSetschedpolicy AttrSetstacksize AttrSetdetachstate AttrGet AttrGetaffinity AttrInit AttrDestroy
+AttrSetstackaddr AttrGetstacksize AttrSetguardsize AttrGetdetachstate AttrGetschedparam AttrGetstackaddr
+AttrGetguardsize Self Yield Exit Detach Join Create CondInit CondWait CondTimedwait CondSignal CondBroadcast
+CondDestroy CondSignalto CondattrInit CondattrDestroy KeyCreate KeyDelete Getspecific Setspecific Once Cancel
+GetthreadidNp Equal Setschedparam Getschedparam SetBesteffort Getname Setcancelstate Setcanceltype Testcancel
+MutexInit MutexattrSetprotocol MutexattrSetprioceiling Getcpuclockid MutexTimedlock MutexGetprioceiling
+"""
+
+POSIX = """
+pthread_create pthread_join pthread_detach pthread_self pthread_exit pthread_attr_init pthread_attr_destroy
+pthread_attr_setstacksize pthread_attr_getstacksize pthread_attr_setdetachstate pthread_attr_setschedparam
+pthread_attr_setschedpolicy pthread_attr_setinheritsched pthread_attr_getschedparam pthread_attr_setstackaddr
+pthread_attr_setguardsize pthread_attr_get_np pthread_cond_init pthread_cond_wait pthread_cond_signal
+pthread_cond_broadcast pthread_cond_timedwait pthread_cond_destroy pthread_condattr_init pthread_condattr_destroy
+pthread_condattr_setclock pthread_key_create pthread_key_delete pthread_getspecific pthread_setspecific pthread_once
+pthread_mutex_init pthread_mutex_destroy pthread_mutex_trylock pthread_mutex_timedlock pthread_mutexattr_destroy
+pthread_mutexattr_setprotocol pthread_rwlock_init pthread_rwlock_rdlock pthread_rwlock_wrlock pthread_rwlock_unlock
+pthread_rwlock_destroy pthread_rwlock_tryrdlock pthread_rwlock_trywrlock pthread_equal pthread_yield sched_yield
+sched_get_priority_max sched_get_priority_min pthread_setschedparam pthread_getschedparam pthread_setcancelstate
+pthread_setcanceltype pthread_testcancel pthread_cancel pthread_setaffinity_np pthread_getaffinity_np
+pthread_set_name_np pthread_getthreadid_np pthread_setprio pthread_getprio nanosleep usleep sleep clock_gettime
+clock_getres gettimeofday time sem_init sem_wait sem_post sem_destroy sem_timedwait sem_trywait sem_getvalue open
+close read write lseek stat fstat mkdir rmdir unlink rename getpid fsync ftruncate pread pwrite mmap munmap mprotect
+madvise getpagesize sysconf __error _write _read _open _close posix_memalign
+"""
+
+LIBC = """
+malloc free calloc realloc memalign memset memcpy memmove memcmp memchr strlen strcpy strncpy strcat strncat strcmp
+strncmp strchr strrchr strstr strtok strdup sprintf snprintf vsnprintf vsprintf printf fprintf puts fputs fopen
+fclose fread fwrite fseek ftell fflush sscanf vsscanf atoi atof strtol strtoul strtod strtof strtoll strtoull qsort
+bsearch rand srand abs labs sin cos tan asin acos atan atan2 sinf cosf tanf asinf acosf atanf atan2f sqrt sqrtf pow
+powf exp expf log logf log10 log10f floor floorf ceil ceilf fmod fmodf fabs fabsf round roundf frexp ldexp modf exp2
+exp2f log2 log2f cbrt cbrtf hypot hypotf trunc truncf lrint lrintf llrint isalpha isdigit isspace isupper islower
+toupper tolower wcslen wcscpy mbstowcs wcstombs setjmp longjmp _setjmp _longjmp localtime gmtime mktime strftime
+difftime clock getenv abort exit atexit _Exit __cxa_atexit __cxa_pure_virtual _ZdlPv _Znwm _ZdaPv _Znam
+_ZSt9terminatev __cxa_guard_acquire __cxa_guard_release __cxa_begin_catch __cxa_end_catch __cxa_rethrow __cxa_throw
+__cxa_allocate_exception __cxa_free_exception _Unwind_Resume __dynamic_cast strerror perror setvbuf vprintf
+vfprintf fgets fgetc fputc putchar getc ungetc remove sincos sincosf _FSin _Sin _Exp _Log _Pow __stack_chk_fail
+__stack_chk_guard _ZNSt8ios_base4InitC1Ev _ZNSt8ios_base4InitD1Ev strnlen strcasecmp strncasecmp wmemcpy wmemset
+swprintf vswprintf towlower towupper catchReturnFromMain _init_env localtime_r gmtime_r asctime ctime
+_ZTVN10__cxxabiv117__class_type_infoE _ZTVN10__cxxabiv120__si_class_type_infoE
+_ZTVN10__cxxabiv121__vmi_class_type_infoE _ZNKSt9exception4whatEv _ZNSt9exceptionD2Ev _ZTISt9exception
+"""
+
+
+EXTRA = """
+__pthread_cxa_finalize __elf_phdr_match_addr _sceKernelSetThreadDtors _sceKernelSetThreadAtexitCount
+_sceKernelSetThreadAtexitReport _sceKernelRtldSetApplicationHeapAPI _sceKernelRtldThreadAtexitIncrement
+_sceKernelRtldThreadAtexitDecrement sceKernelGetModuleInfo2 sceKernelGetModuleList2 sceKernelIsProspero
+sceDiscMapIsRequestOnHDD sceDiscMapGetPackageSize sceDiscMapIsRequestOnHDD2 sceKernelGetCpuTemperature
+sceKernelGetCpuFrequency sceKernelGetProcessType sceKernelGetPrtAperture sceKernelSetPrtAperture
+sceKernelMapNamedSystemFlexibleMemory sceKernelAioInitializeParam sceKernelAioSubmitReadCommands
+sceKernelAioWaitRequest sceKernelAioDeleteRequest sceKernelAioPollRequest sceKernelAioSubmitWriteCommands
+sceKernelAioCancelRequest sceKernelAioSetParam sceKernelAioSubmitReadCommandsMultiple getargc getargv
+sceKernelGetEventError sceKernelDeleteHRTimerEvent sceKernelIsGenuineCEX sceKernelIsDevKit sceKernelHasNeoMode
+ioctl fcntl getcwd sceKernelGetSafemode scePthreadAttrGetstack scePthreadAttrSetstack pthread_attr_getstack
+sceKernelGetAllowedSdkVersionOnSystem sceKernelGetCurrentCpu sceKernelGetThreadName sceKernelSetThreadName
+sceKernelGetModuleInfoInternal sceKernelGetModuleListInternal sceKernelQueryMemoryProtection
+sceKernelGetBackupRestoreMode sceKernelGetSystemSwBeta sceKernelGetOpenPsIdForSystem sceKernelRandomizedPath
+sceKernelSetBesteffort sceKernelGetBudget sceKernelGetCpuUsage sceKernelGetIdTableCurrentCount
+sceKernelGetProcessTimeCounter scePthreadMutexattrGettype scePthreadMutexattrSettype scePthreadMutexGetprioceiling
+scePthreadMutexSetprioceiling scePthreadMutexIsowned scePthreadAttrGetinheritsched scePthreadAttrGetschedpolicy
+scePthreadCondattrSetclock scePthreadCondattrGetclock sceKernelSleep sceKernelUsleep sceKernelNanosleep
+sceKernelGetPhysPageSize sceKernelGetFsSandboxRandomWord sceKernelIsAddressSanitizerEnabled
+sceKernelGetMainSocId sceKernelGetSystemLevelDebuggerModeForRcmgr sceKernelDebugOutText sceKernelPrintBacktraceWithModuleInfo
+sceKernelBacktraceSelf sceKernelGetExecutableModuleHandle sceKernelGetModuleHandle sceKernelIsCEX
+sceKernelGetHwModelName sceKernelGetHwSerialNumber sceKernelIccGetCPMode sceKernelGetUtokenStoreModeForRcmgr
+pthread_attr_getdetachstate pthread_attr_getguardsize pthread_attr_getinheritsched pthread_attr_getschedpolicy
+pthread_mutexattr_gettype pthread_mutexattr_getprotocol pthread_condattr_getclock sched_setparam sched_getparam
+"""
+
+
+def main():
+    falta = [m.split('#')[0] for m in json.loads((AQUI / 'cobertura.json').read_text())['missing']]
+    nomes = SCE.split() + ['sceKernel' + k for k in KERNEL.split()] + ['scePthread' + p for p in PTHREAD.split()]
+    nomes += POSIX.split() + LIBC.split() + EXTRA.split()
+    falta += [m.split('#')[0] for m in json.loads((AQUI / 'falta.json').read_text())] if (AQUI / 'falta.json').exists() else []
+    achados = {nid(n): n for n in nomes if nid(n) in falta}
+    print(f'identificados {len(achados)} de {len(falta)}')
+    for h in falta:
+        print(h, achados.get(h, '?'))
+    (AQUI / 'nomes_faltantes.json').write_text(json.dumps(achados, indent=1))
+
+
+if __name__ == '__main__':
+    main()
