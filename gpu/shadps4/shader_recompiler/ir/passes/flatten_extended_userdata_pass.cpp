@@ -492,6 +492,9 @@ static bool EmitComputeOffsetBitFieldUExtract(Xbyak::CodeGenerator& c, Xbyak::Re
 
 static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     switch (inst->GetOpcode()) {
+    case IR::Opcode::ReadFirstLane: // bbport: see ComputeOffset
+    case IR::Opcode::ReadLane:
+    case IR::Opcode::Phi:
     case IR::Opcode::GetUserData:
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
@@ -516,6 +519,10 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw) {
     ASSERT(reg != ecx && reg != edx);
+    if (off_dw.IsImmediate()) { // bbport: reachable through ReadLane/Phi sources
+        c.mov(reg, off_dw.U32());
+        return true;
+    }
     auto inst = off_dw.Inst();
     switch (inst->GetOpcode()) {
     case IR::Opcode::GetUserData:
@@ -564,6 +571,38 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::BitFieldUExtract:
         ABORT_ON_FAILURE(EmitComputeOffsetBitFieldUExtract(c, reg, pass_info, inst));
         return true;
+    // bbport: resource-table offsets The Order: 1886 could not walk (17,000 failures in a session:
+    // null descriptors, missing textures, a depth-of-field mask blurring the whole screen).
+    case IR::Opcode::ReadFirstLane:
+    case IR::Opcode::ReadLane:
+        // An SGPR copy of a vector register lane. Offsets into a resource table are uniform
+        // (the same in every lane), so the walker computes the source value itself.
+        return ComputeOffset(c, reg, pass_info, inst->Arg(0));
+    case IR::Opcode::Phi: {
+        // Control-flow merge: if every incoming value, other than the phi itself (a loop
+        // carrying it unchanged), is the same value, the offset is that value.
+        const IR::Value* common = nullptr;
+        for (size_t i = 0; i < inst->NumArgs(); ++i) {
+            const IR::Value& arg = inst->Arg(i);
+            if (!arg.IsImmediate() && arg.Inst() == inst) {
+                continue;
+            }
+            if (!common) {
+                common = &arg;
+            } else if (!(arg == *common)) {
+                LOG_ERROR(Render_Recompiler, "SRT offset phi merges different values");
+                return false;
+            }
+        }
+        if (!common) {
+            return false;
+        }
+        if (common->IsImmediate()) {
+            c.mov(reg, common->U32());
+            return true;
+        }
+        return ComputeOffset(c, reg, pass_info, *common);
+    }
     default:
         LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
                   magic_enum::enum_name(inst->GetOpcode()));

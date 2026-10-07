@@ -22,6 +22,10 @@ fi
 # Tela cheia sem bordas (SDL3): em janela, a área 1920x1080 + barra de título e bordas passava do
 # tamanho do monitor e cortava os lados. BB_JANELA=1 bash iterar.sh -> abre em janela.
 [ -z "${BB_JANELA:-}" ] && export BB_FULLSCREEN=1
+# Upscaler, jitter e vetores de movimento do BBPort foram feitos para o Bloodborne (o FSR procura um
+# shader dele): no The Order só tremem a imagem e gastam CPU/GPU. Desligados até adaptarmos.
+# BB_COM_UPSCALER=1 bash iterar.sh -> usa a configuração do menu (work/bbport.ini).
+[ -z "${BB_COM_UPSCALER:-}" ] && export BB_UPSCALER=none BB_JITTER=0 BB_OBJECT_MOTION=0
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then
