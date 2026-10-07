@@ -321,6 +321,8 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         u64 expected_size =
             (static_cast<u64>(image_info.size.width) * static_cast<u64>(image_info.size.height) *
              static_cast<u64>(image_info.size.depth) * static_cast<u64>(image_info.num_bits) / 8);
+        static int unresolvable_logs = 0;
+        if (unresolvable_logs++ < 4)
         LOG_ERROR(Render_Vulkan,
                   "Unresolvable image overlap with equal memory address:\n"
                   "=== OLD IMAGE (cached) ===\n"
@@ -431,7 +433,12 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                   merged_image_id.index, static_cast<int>(binding), scheduler.CurrentTick(),
                   scheduler.CurrentTick() - cache_image.tick_accessed_last);
 
-        UNREACHABLE_MSG("Encountered unresolvable image overlap with equal memory address.");
+        // BBPort: the address was reused for an unrelated image (pool allocation).
+        // Treat it like the tile-mode case instead of aborting the game.
+        if (safe_to_delete) {
+            FreeImage(cache_image_id);
+        }
+        return {merged_image_id, -1, -1};
     }
 
     // Right overlap, the image requested is a possible subresource of the image from cache.
