@@ -16,6 +16,9 @@ fi
 # com elas o driver da NVIDIA caía no início (nvoglv64.dll). Desligadas só para o jogo.
 # BB_COM_CAMADAS=1 bash iterar.sh  -> mantém as camadas (para comparar).
 [ -z "${BB_COM_CAMADAS:-}" ] && export VK_LOADER_LAYERS_DISABLE='~implicit~'
+# Estatísticas de quadro (FPS, pior quadro, compilação de shaders, travadas) a cada 5 s no log.
+# BB_SEM_STATS=1 bash iterar.sh -> desliga.
+[ -z "${BB_SEM_STATS:-}" ] && export BB_FRAME_STATS=1 BB_PERM_TRACE=1
 cd "$BB" && BB_GAME_DIR="B:/Projeto the order 1886/CUSA00785" BB_DATA_DIR="B:/Projeto the order 1886/work" \
     MSYS2_ROOT="B:/msys64" timeout "${1:-90}" python run.py >"$LOG" 2>&1
 R=$?

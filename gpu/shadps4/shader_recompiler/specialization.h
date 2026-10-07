@@ -3,13 +3,18 @@
 
 #pragma once
 
+#include <algorithm>
 #include <bitset>
+#include <string>
 
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/profile.h"
+
+// bbport: runtime_memory.c: bytes of [address, address+size) mapped in guest memory.
+extern "C" uint64_t runtime_memory_clamp(uintptr_t address, uint64_t size);
 
 namespace Shader {
 
@@ -164,11 +169,29 @@ struct StageSpecialization {
         }
     }
 
+    /// bbport: garbage sharps (shader resource tables the recompiler could not resolve, The Order:
+    /// 1886) carry random strides, view types, swizzles and FMASK sizes: specializing on them made
+    /// a new permutation, and a shader compile, almost every draw (2523 of one program). A sharp at
+    /// unmapped memory, or an image with an unused tile mode, is bound as null by the rasterizer
+    /// anyway: specialize it as null too.
+    static bool Plausible(const AmdGpu::Buffer& sharp) {
+        return runtime_memory_clamp(sharp.base_address, 1) == 1;
+    }
+    static bool Plausible(const AmdGpu::Image& sharp) {
+        const u32 tile = static_cast<u32>(sharp.GetTileMode());
+        return (tile <= static_cast<u32>(AmdGpu::TileMode::Thick3DXThick) ||
+                sharp.GetTileMode() == AmdGpu::TileMode::DisplayLinearGeneral) &&
+               runtime_memory_clamp(sharp.Address(), 1) == 1;
+    }
+    static bool Plausible(const AmdGpu::Sampler&) {
+        return true;
+    }
+
     void ForEachSharp(auto& spec_list, auto& desc_list, auto&& func) {
         for (const auto& desc : desc_list) {
             auto& spec = spec_list.emplace_back();
             const auto sharp = desc.GetSharp(*info);
-            if (!sharp) {
+            if (!sharp || !Plausible(sharp)) {
                 continue;
             }
             func(spec, desc, sharp);
@@ -179,7 +202,7 @@ struct StageSpecialization {
         for (const auto& desc : desc_list) {
             auto& spec = spec_list.emplace_back();
             const auto sharp = desc.GetSharp(*info);
-            if (!sharp) {
+            if (!sharp || !Plausible(sharp)) {
                 binding++;
                 continue;
             }
@@ -243,6 +266,77 @@ struct StageSpecialization {
             }
         }
         return true;
+    }
+
+    /// bbport (BB_PERM_TRACE=1): which parts differ from another specialization of the same
+    /// program, to find what keeps creating permutations.
+    std::string DescribeDifference(const StageSpecialization& other) const {
+        std::string out;
+        const auto add = [&](const std::string& s) { out += out.empty() ? s : ", " + s; };
+        if (runtime_info != other.runtime_info) {
+            const auto &a = runtime_info, &b = other.runtime_info;
+            std::string d = "runtime_info[stage " + std::to_string(int(a.hw_stage));
+            if (!(a.props == b.props)) {
+                d += " props(user_data " + std::to_string(a.props.num_user_data) + "/" +
+                     std::to_string(b.props.num_user_data) + " vgprs " +
+                     std::to_string(a.props.num_input_vgprs) + "/" +
+                     std::to_string(b.props.num_input_vgprs) + " alloc " +
+                     std::to_string(a.props.num_allocated_vgprs) + "/" +
+                     std::to_string(b.props.num_allocated_vgprs) + ")";
+            }
+            if (!a.HasSameSwInfo(b.sw)) d += " sw";
+            if (!a.HasSameHwInfo(b.hw)) {
+                d += " hw";
+                if (a.hw_stage == HwStage::Fragment) {
+                    const auto &x = a.hw.fs, &y = b.hw.fs;
+                    if (x.color_buffers != y.color_buffers) d += ":color_buffers";
+                    if (x.num_inputs != y.num_inputs) d += ":num_inputs";
+                    if (x.num_samples != y.num_samples) d += ":samples";
+                    if (x.mrtz_mask != y.mrtz_mask) d += ":mrtz";
+                    if (x.motion_vectors != y.motion_vectors) d += ":motion";
+                    if (x.dual_source_blending != y.dual_source_blending) d += ":dual_src";
+                } else if (a.hw_stage == HwStage::Compute) {
+                    const auto &x = a.hw.cs, &y = b.hw.cs;
+                    d += ":wg " + std::to_string(x.workgroup_size[0]) + "x" +
+                         std::to_string(x.workgroup_size[1]) + " vs " +
+                         std::to_string(y.workgroup_size[0]) + "x" +
+                         std::to_string(y.workgroup_size[1]);
+                }
+            }
+            add(d + "]");
+        }
+        if (fetch_shader_data != other.fetch_shader_data) add("fetch_shader");
+        if (vs_attribs != other.vs_attribs) add("vs_attribs");
+        if (start != other.start) add("start_bindings");
+        if (fmasks.size() != other.fmasks.size()) add("fmask_count");
+        for (size_t i = 0; i < std::min(fmasks.size(), other.fmasks.size()); ++i) {
+            if (fmasks[i] != other.fmasks[i]) {
+                add("fmask" + std::to_string(i) + "(" + std::to_string(fmasks[i].width) + "x" +
+                    std::to_string(fmasks[i].height) + ")");
+            }
+        }
+        for (size_t i = 0; i < std::min(buffers.size(), other.buffers.size()); ++i) {
+            if (buffers[i] != other.buffers[i]) {
+                add("buf" + std::to_string(i) + "(stride " + std::to_string(buffers[i].stride) +
+                    " vs " + std::to_string(other.buffers[i].stride) + ")");
+            }
+        }
+        for (size_t i = 0; i < std::min(images.size(), other.images.size()); ++i) {
+            const auto &a = images[i], &b = other.images[i];
+            if (a != b) {
+                add("img" + std::to_string(i) + "(" + (a.type != b.type ? "type " : "") +
+                    (a.is_integer != b.is_integer ? "int " : "") +
+                    (a.is_cube != b.is_cube ? "cube " : "") + (a.is_srgb != b.is_srgb ? "srgb " : "") +
+                    (a.dst_select != b.dst_select ? "swizzle " : "") +
+                    (a.num_conversion != b.num_conversion ? "conv " : "") +
+                    (a.num_bindings != b.num_bindings ? "bindings" : "") + ")");
+            }
+        }
+        for (size_t i = 0; i < std::min(samplers.size(), other.samplers.size()); ++i) {
+            if (samplers[i] != other.samplers[i]) add("smp" + std::to_string(i));
+        }
+        if (bitset != other.bitset) add("null-mask");
+        return out.empty() ? "no visible difference" : out;
     }
 
     void Serialize(Serialization::Archive& ar) const;

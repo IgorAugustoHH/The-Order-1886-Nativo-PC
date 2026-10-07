@@ -766,7 +766,15 @@ public:
         if (!IsRecordingDeferred()) {
             return;
         }
-        ASSERT(bytes + 1024 <= RecordChunk::Capacity);
+        if (bytes + 1024 > RecordChunk::Capacity) {
+            // bbport: data larger than a chunk (The Order: 1886's descriptor tables): catch the
+            // recording thread up and record directly until the next submission, as
+            // CommandBuffer() does; RecordData() then hands out the caller's own data.
+            SyncRecording();
+            direct_mode = true;
+            direct_recordings.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         if (RecordChunk::Capacity - record_chunk->Size() < bytes + 1024) {
             full_chunks.push_back(std::move(record_chunk));
             record_chunk = AcquireChunk();
@@ -783,6 +791,9 @@ public:
         // Room for the data and the command that follows it, so both stay in one chunk.
         const size_t bytes = data.size_bytes();
         ReserveRecordData(bytes + alignof(T));
+        if (!IsRecordingDeferred()) {
+            return data; // switched to direct recording: the command runs now, data still valid
+        }
         auto* dst = static_cast<T*>(record_chunk->Allocate(bytes, alignof(T)));
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};

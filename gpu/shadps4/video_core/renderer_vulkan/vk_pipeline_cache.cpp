@@ -916,6 +916,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         program->last_used = std::distance(program->modules.begin(), it);
     }
     if (it == program->modules.end()) {
+        static const bool perm_trace = std::getenv("BB_PERM_TRACE") != nullptr;
+        if (perm_trace && !program->modules.empty()) {
+            LOG_WARNING(Render_Vulkan, "Permutation {} of {:#x}: {}", perm_idx, params.hash,
+                        spec.DescribeDifference(program->modules[0].spec));
+        }
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 
