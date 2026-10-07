@@ -51,6 +51,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
+    // bbport: scheduler entry points on the GPU command thread wait for the draw recording thread.
+    scheduler.SetDrawPipeDrain([this] { DrainDrawPipe(); });
     // Object motion first: it fixes the buffer addresses the motion shader variants embed.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
@@ -75,7 +77,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     });
 }
 
-Rasterizer::~Rasterizer() = default;
+Rasterizer::~Rasterizer() {
+    scheduler.SetDrawPipeDrain({}); // the drain captured this rasterizer
+}
 
 inline const AmdGpu::Regs& Rasterizer::Regs() const {
     return stage_regs ? *stage_regs : liverpool->regs;
@@ -127,8 +131,9 @@ bool IsPlausibleImage(const AmdGpu::Image& t, Core::MemoryManager* memory) {
     if (bytes > MaxImageBytes) {
         return false;
     }
-    const u64 probe = std::min<u64>(bytes, 16ull << 20);
-    return probe == 0 || memory->ClampRangeSize(t.Address(), probe) == probe;
+    // Only the start must be mapped: the estimate above pads with the pitch and layers, and a
+    // real texture at the end of its allocation was rejected (missing font glyphs in the menu).
+    return memory->ClampRangeSize(t.Address(), 1) == 1;
 }
 /// magic_enum::enum_contains, from a table: it scans every enumerator (per texture per draw).
 bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
@@ -1531,6 +1536,17 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
             !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
             !IsPlausibleImage(tsharp, memory)) {
+            // bbport: this (prepared draw) path rejected silently; log a few, to spot real
+            // textures rejected by mistake.
+            static std::atomic<int> logged{0};
+            if (tsharp.Address() != 0 && memory->IsValidGpuMapping(tsharp.Address(), 0) &&
+                logged.fetch_add(1) < 32) {
+                LOG_WARNING(Render_Vulkan,
+                            "Prepared draw: null T# at {:#x}, {}x{} pitch={} depth={} fmt={}/{} tile={}",
+                            tsharp.Address(), u32(tsharp.width) + 1, u32(tsharp.height) + 1,
+                            tsharp.Pitch(), u32(tsharp.depth) + 1, static_cast<u32>(data_fmt),
+                            static_cast<u32>(num_fmt), static_cast<u32>(tsharp.GetTileMode()));
+            }
             continue; // null descriptor
         }
         const auto& entry =
@@ -2181,7 +2197,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     vsharp.base_address, size, desc.is_written, desc.is_formatted);
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
-                if (adjust % 4 != 0) {
+                // bbport: once per few shaders, not per draw (The Order: 1886 hit it 1,200 times
+                // a second on the draw recording thread, the frame-rate limit).
+                static std::atomic<int> unaligned_logged{0};
+                if (adjust % 4 != 0 && unaligned_logged.fetch_add(1) < 16) {
                     LOG_WARNING(Render_Vulkan, "Buffer binding in shader {:#x} isn't dword aligned",
                                 stage.pgm_hash);
                 }
@@ -2305,6 +2324,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
             !IsPlausibleImage(tsharp, memory)) {
+            static std::atomic<int> rejected_logged{0}; // bbport: per draw, so only the first few
+            if (rejected_logged.fetch_add(1) < 64)
             LOG_WARNING(Render_Vulkan,
                         "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
                         "data_format={}, num_format={}",

@@ -705,6 +705,23 @@ public:
         this->on_submit = std::move(on_submit);
     }
 
+    /// bbport: the rasterizer's draw-pipe drain. Draws are recorded on the draw recording thread
+    /// (Rasterizer::Draw: BeginRendering, Record); the GPU command thread ending a render pass,
+    /// recording directly or submitting must first let it finish, or both threads drive the same
+    /// command buffer and render-pass state (Vulkan validation: a command buffer ended inside a
+    /// render pass, commands recorded after the end; NVIDIA: crash in vkCmdEndRendering).
+    /// The drain is a no-op on other threads.
+    void SetDrawPipeDrain(std::function<void()>&& drain) {
+        draw_pipe_drain = std::move(drain);
+    }
+    void DrainDrawPipe() {
+        if (draw_pipe_drain && !draining) {
+            draining = true;
+            draw_pipe_drain();
+            draining = false;
+        }
+    }
+
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
@@ -720,6 +737,7 @@ public:
     /// records directly (Record() included, so callers may mix both) until the next
     /// KickRecording() or submission.
     [[gnu::noinline]] vk::CommandBuffer CommandBuffer() {
+        DrainDrawPipe();
         if (recording_threaded && !direct_mode) {
             SyncRecording();
             direct_mode = true;
@@ -919,6 +937,8 @@ private:
     std::jthread priority_pending_ops_thread;
     RenderState render_state;
     bool is_rendering = false;
+    std::function<void()> draw_pipe_drain;
+    static inline thread_local bool draining = false;
     // bbport: threaded recording
     std::unique_ptr<RecordChunk> record_chunk;
     std::vector<std::unique_ptr<RecordChunk>> full_chunks;

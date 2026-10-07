@@ -159,8 +159,11 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
 
-    if (flipMode != 1) {
+    // bbport: The Order: 1886 always flips with mode 3; say it once, not every frame.
+    static int last_flip_mode = 1;
+    if (flipMode != 1 && flipMode != last_flip_mode) {
         LOG_WARNING(Lib_VideoOut, "flipmode = {}", flipMode);
+        last_flip_mode = flipMode;
     }
 
     if (bufferIndex < -1 || bufferIndex > 15) {

@@ -126,6 +126,7 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
 }
 
 void Scheduler::EndRendering() {
+    DrainDrawPipe();
     if (!is_rendering) {
         return;
     }
@@ -395,6 +396,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
+    DrainDrawPipe(); // before the lock: the draw recording thread may need it
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
 

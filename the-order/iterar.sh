@@ -19,6 +19,19 @@ fi
 # Estatísticas de quadro (FPS, pior quadro, compilação de shaders, travadas) a cada 5 s no log.
 # BB_SEM_STATS=1 bash iterar.sh -> desliga.
 [ -z "${BB_SEM_STATS:-}" ] && export BB_FRAME_STATS=1 BB_PERM_TRACE=1
+# Tela cheia sem bordas (SDL3): em janela, a área 1920x1080 + barra de título e bordas passava do
+# tamanho do monitor e cortava os lados. BB_JANELA=1 bash iterar.sh -> abre em janela.
+[ -z "${BB_JANELA:-}" ] && export BB_FULLSCREEN=1
+# Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
+# gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
+if [ -n "${BB_VALIDACAO:-}" ]; then
+    export VK_ADD_LAYER_PATH='B:\msys64\clang64\bin' VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+    export VK_KHRONOS_VALIDATION_DEBUG_ACTION=VK_DBG_LAYER_ACTION_LOG_MSG
+    export VK_KHRONOS_VALIDATION_REPORT_FLAGS=error
+    export VK_KHRONOS_VALIDATION_DUPLICATE_MESSAGE_LIMIT=3
+    export VK_KHRONOS_VALIDATION_LOG_FILENAME="B:/Projeto the order 1886/work/validacao.txt"
+    rm -f "$RAIZ/work/validacao.txt"
+fi
 cd "$BB" && BB_GAME_DIR="B:/Projeto the order 1886/CUSA00785" BB_DATA_DIR="B:/Projeto the order 1886/work" \
     MSYS2_ROOT="B:/msys64" timeout "${1:-90}" python run.py >"$LOG" 2>&1
 R=$?
