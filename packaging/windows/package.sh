@@ -54,6 +54,15 @@ ldd "$dest/bin/bb-probe.exe" "$dest/bin/bb-gpu-capabilities.exe" |
 cp -r scripts patches "$dest/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
 if [[ -d fsr4_shaders ]]; then cp -r fsr4_shaders "$dest/"; fi
+# DLSS (NVIDIA RTX): the MSVC-built bridge and NVIDIA's runtime, next to bb-probe.exe
+# (packaging/windows/build_dlss.sh). Without them the DLSS option stays unavailable.
+if [[ -f out/bbport_dlss.dll && -f out/nvngx_dlss.dll ]]; then
+    cp out/bbport_dlss.dll out/nvngx_dlss.dll "$dest/bin/"
+    mkdir -p "$dest/licenses" && cp out/NVIDIA-DLSS-LICENSE.txt "$dest/licenses/"
+    cp gpu/dlss_bridge/LICENSE.txt "$dest/licenses/bbport_dlss-LICENSE.txt"
+else
+    echo "DLSS bridge not built (packaging/windows/build_dlss.sh): no DLSS in this package" >&2
+fi
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 mkdir -p dist
 rm -f dist/bbport-windows.zip

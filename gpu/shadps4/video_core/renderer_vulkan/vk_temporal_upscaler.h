@@ -20,6 +20,7 @@
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/texture_cache/image.h"
 
@@ -164,6 +165,12 @@ private:
     bool RecordReactive(vk::ImageView color_view);
     /// FSR 4 is selected, possible in this session (not BB_RENDER_RES) and has not failed.
     [[nodiscard]] bool UseFsr4() const;
+    /// bbport: DLSS selected and the bridge is ready (NVIDIA RTX, bbport_dlss.dll).
+    [[nodiscard]] bool UseDlss() const;
+    /// Records DLSS into `cmdbuf` (output in General). `hdr`: linear scene color input.
+    bool RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource& color,
+                    const Dlss::Resource& depth, u32 w, u32 h, u32 ow, u32 oh, float frame_ms,
+                    bool hdr);
     /// Records FSR 4 into output_image; on a permanent failure FSR 3 takes over.
     bool RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color, Fsr4Upscaler::Image depth,
                     u32 w, u32 h, u32 ow, u32 oh, float frame_ms);
@@ -244,6 +251,7 @@ private:
     bool resources_taa = false;
     std::unique_ptr<Fsr4Upscaler> fsr4;
     bool fsr4_failed = false;
+    bool dlss_failed = false;
     VideoCore::UniqueImage motion_image;
     VideoCore::UniqueImage output_image;
     vk::UniqueImageView motion_view;

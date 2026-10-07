@@ -38,7 +38,7 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '1.4'
+VERSION = '1.5'
 RELEASES_API = 'https://api.github.com/repos/Supermedo/bloodborne_pc/releases/latest'
 RELEASES_PAGE = 'https://github.com/Supermedo/bloodborne_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'bbport-update'
@@ -169,7 +169,8 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True}
 
-UPSCALERS = [('fsr4', ('FSR 4 (best quality)', 'FSR 4 (лучшее качество)')),
+UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
+             ('fsr4', ('FSR 4 (best quality)', 'FSR 4 (лучшее качество)')),
              ('fsr411', ('FSR 4.1.1 (needs fsr4_411 assets)', 'FSR 4.1.1 (нужны ассеты fsr4_411)')),
              ('fsr3', ('FSR 3.1 (every GPU)', 'FSR 3.1 (любая видеокарта)')),
              ('taa', ('TAA (native resolution anti-aliasing)', 'TAA (нативное сглаживание)')),

@@ -40,6 +40,13 @@ game directly with the saved settings.
 From a source tree it adds `C:\msys64\clang64\bin` (or `$MSYS2_ROOT`) to `PATH` for the DLLs.
 `bash tools/fetch_fsr4_assets.sh` works in the CLANG64 shell as on Linux.
 
+DLSS (optional): `DLSS_SDK_ROOT=<checkout of github.com/NVIDIA/DLSS> bash
+packaging/windows/build_dlss.sh` builds `bbport_dlss.dll` (`gpu/dlss_bridge`, the only code that
+uses the NVIDIA SDK, compiled with MSVC 2022) and copies it with `nvngx_dlss.dll` next to
+`out/bb-probe.exe`; `package.sh` ships both when present. The renderer loads the bridge at run
+time (`vk_dlss.cpp`), adds the Vulkan extensions NGX asks for, and DLSS gets the same inputs as
+FSR 3 (scene color, depth, render-pixel motion vectors, jitter). `BB_DLSS=0` turns it off.
+
 The launcher texts are written in English with the Russian beside them; the other languages
 are in `launcher/bbport_lang.py` (one list per language in the order of `KEYS`; a missing or
 empty text falls back to English). The icon (`launcher/bloodborne.ico`/`.png`) is drawn by

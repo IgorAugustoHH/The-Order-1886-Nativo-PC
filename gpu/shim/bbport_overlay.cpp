@@ -171,13 +171,14 @@ void Menu() {
 
     ImGui::SeparatorText("Временной апскейлер");
     static const char* upscalers[] = {"Выкл", "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
-                                     "TAA (нативное сглаживание)"};
-    static const char* later[] = {"DLSS", "XeSS"};
+                                     "TAA (нативное сглаживание)", "DLSS (NVIDIA RTX)"};
+    static const char* later[] = {"XeSS"};
     int upscaler = s.upscaler;
     if (ImGui::BeginCombo("Апскейлер", upscalers[upscaler])) {
         for (int i = 0; i < BbSettings::UpscalerCount; ++i) {
             const bool supported = i == BbSettings::UpscalerFsr4 ? s.fsr4_supported.load()
-                : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load() : true;
+                : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
+                : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load() : true;
             ImGui::BeginDisabled(!supported);
             if (ImGui::Selectable(upscalers[i], i == upscaler)) {
                 Store(s.upscaler, i, true);
@@ -196,6 +197,9 @@ void Menu() {
             ImGui::TextDisabled("— в работе");
         }
         ImGui::EndCombo();
+    }
+    if (const char* problem = s.dlss_problem.load(); problem && upscaler == BbSettings::UpscalerDlss) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", problem);
     }
     if (const char* problem = s.fsr4_problem.load()) {
         ImGui::PushTextWrapPos();
@@ -446,6 +450,7 @@ void FpsCounter() {
                 : s.upscaler == BbSettings::UpscalerFsr4 ? "FSR 4"
                 : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
                 : s.upscaler == BbSettings::UpscalerTaa ? "TAA"
+                : s.upscaler == BbSettings::UpscalerDlss ? "DLSS"
                                                          : "");
     ImGui::End();
 }
