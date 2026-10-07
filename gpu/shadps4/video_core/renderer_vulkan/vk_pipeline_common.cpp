@@ -7,6 +7,7 @@
 #include <boost/container/static_vector.hpp>
 
 #include "shader_recompiler/resource.h"
+#include "video_core/renderer_vulkan/bb_vram_report.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
@@ -18,9 +19,13 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
                    const Shader::Profile& profile_, vk::PipelineCache pipeline_cache,
                    bool is_compute_ /*= false*/)
     : instance{instance_}, scheduler{scheduler_}, desc_heap{desc_heap_}, profile{profile_},
-      is_compute{is_compute_} {}
+      is_compute{is_compute_} {
+    ++(is_compute ? BbVram::compute_pipelines : BbVram::graphics_pipelines);
+}
 
-Pipeline::~Pipeline() = default;
+Pipeline::~Pipeline() {
+    --(is_compute ? BbVram::compute_pipelines : BbVram::graphics_pipelines);
+}
 
 
 void Pipeline::BindResources(DescriptorWrites& set_writes,

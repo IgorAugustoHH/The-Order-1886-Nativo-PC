@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_toggles.h"
+#include "video_core/renderer_vulkan/bb_vram_report.h"
 #include <ranges>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -87,12 +88,14 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 
 UniqueImage::~UniqueImage() {
     if (image) {
+        BbVram::NoteImage(allocator, allocation, -1);
         vmaDestroyImage(allocator, image, allocation);
     }
 }
 
 void UniqueImage::Destroy() {
     if (image) {
+        BbVram::NoteImage(allocator, allocation, -1);
         vmaDestroyImage(allocator, image, allocation);
         image = vk::Image{};
         allocation = {};
@@ -120,6 +123,7 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                image_ci.extent.width, image_ci.extent.height, vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
+    BbVram::NoteImage(allocator, allocation, +1, &image_ci_unsafe);
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,

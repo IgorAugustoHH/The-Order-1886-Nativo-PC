@@ -11,6 +11,7 @@
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/bb_vram_report.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -657,6 +658,7 @@ bool Instance::CreateDevice() {
     }
 
     CreateAllocator();
+    BbVram::SetInstance(this);
     return true;
 }
 
