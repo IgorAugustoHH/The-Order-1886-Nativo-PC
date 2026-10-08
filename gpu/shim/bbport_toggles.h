@@ -70,6 +70,7 @@ enum : std::uint64_t {
     TaaKeepNearerHistory = 1ull << 55,
     SceneMipBias = 1ull << 57, ///< negative LOD bias of G-buffer samplers at reduced scene sizes
     DeferredReadbacks = 1ull << 58, ///< CPU writes beside GPU-written bytes skip the GPU wait
+    AsyncCompute = 1ull << 59, ///< new compute permutations/pipelines built on compile threads
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {

@@ -258,6 +258,26 @@ private:
         vk::ShaderModule module{};
         std::vector<u32> spv;
     };
+    /// bbport: compute pipelines built on a compile thread (BB_ASYNC_COMPUTE=0: on the GPU
+    /// thread). In The Order: 1886 a lighting compute shader (0x804aeead, 33 images) gets a new
+    /// permutation whenever its image types change: ~150 ms each, nearly all the stutters left
+    /// in run77. The dispatch is skipped until it is built.
+    struct AsyncComputeJob {
+        ComputePipelineKey key{};
+        std::unique_ptr<Shader::Info> snapshot;
+        const Shader::Info* live_info{};
+        vk::ShaderModule module{};
+    };
+    struct AsyncComputeResult {
+        ComputePipelineKey key{};
+        std::unique_ptr<ComputePipeline> pipeline;
+        ComputePipeline::SerializationSupport sdata{};
+    };
+    std::deque<AsyncComputeJob> async_compute_jobs;     ///< guarded by async_mutex
+    std::vector<AsyncComputeResult> async_compute_done; ///< guarded by async_mutex
+    std::unordered_set<ComputePipelineKey> async_compute_pending; ///< GPU thread only
+    bool async_compute = false;
+    bool AsyncComputeOn() const;
     std::deque<AsyncShaderJob> async_shader_jobs;       ///< guarded by async_mutex
     std::vector<AsyncShaderResult> async_shader_done;   ///< guarded by async_mutex
     bool async_shaders = false;

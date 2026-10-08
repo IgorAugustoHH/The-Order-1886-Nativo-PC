@@ -582,6 +582,8 @@ void PipelineCache::StartAsyncCompilers() {
     }
     const char* shaders_env = std::getenv("BB_ASYNC_SHADERS");
     async_shaders = !(shaders_env && shaders_env[0] == '0');
+    const char* compute_env = std::getenv("BB_ASYNC_COMPUTE");
+    async_compute = async_shaders && !(compute_env && compute_env[0] == '0');
     constexpr u32 NumCompilers = 2;
     for (u32 i = 0; i < NumCompilers; ++i) {
         async_compilers.emplace_back([this](std::stop_token stop) {
@@ -590,11 +592,12 @@ void PipelineCache::StartAsyncCompilers() {
             for (;;) {
                 AsyncGraphicsJob job;
                 std::optional<AsyncShaderJob> shader_job;
+                std::optional<AsyncComputeJob> compute_job;
                 {
                     std::unique_lock lock{async_mutex};
                     async_cv.wait(lock, [&] {
                         return stop.stop_requested() || !async_jobs.empty() ||
-                               !async_shader_jobs.empty();
+                               !async_shader_jobs.empty() || !async_compute_jobs.empty();
                     });
                     if (stop.stop_requested()) {
                         return;
@@ -603,10 +606,33 @@ void PipelineCache::StartAsyncCompilers() {
                     if (!async_shader_jobs.empty()) {
                         shader_job = std::move(async_shader_jobs.front());
                         async_shader_jobs.pop_front();
+                    } else if (!async_compute_jobs.empty()) {
+                        compute_job = std::move(async_compute_jobs.front());
+                        async_compute_jobs.pop_front();
                     } else {
                         job = std::move(async_jobs.front());
                         async_jobs.pop_front();
                     }
+                }
+                if (compute_job) {
+                    auto& cj = *compute_job;
+                    AsyncComputeResult result{};
+                    result.key = cj.key;
+                    {
+                        CompileTimer timer;
+                        result.pipeline = std::make_unique<ComputePipeline>(
+                            instance, scheduler, desc_heap, profile, *pipeline_cache, cj.key,
+                            *cj.snapshot, cj.module, result.sdata, false);
+                    }
+                    std::array<const Shader::Info*, Shader::MaxStageTypes> live{};
+                    live[u32(Shader::SwStage::Compute)] = cj.live_info;
+                    result.pipeline->RebindStageInfos(live);
+                    {
+                        std::scoped_lock lock{async_mutex};
+                        async_compute_done.push_back(std::move(result));
+                    }
+                    async_done_count.fetch_add(1, std::memory_order_release);
+                    continue;
                 }
                 if (shader_job) {
                     auto& sj = *shader_job;
@@ -662,10 +688,12 @@ void PipelineCache::StartAsyncCompilers() {
 void PipelineCache::DrainAsyncPipelines() {
     std::vector<AsyncGraphicsResult> done;
     std::vector<AsyncShaderResult> shaders_done;
+    std::vector<AsyncComputeResult> compute_done;
     {
         std::scoped_lock lock{async_mutex};
         done.swap(async_done);
         shaders_done.swap(async_shader_done);
+        compute_done.swap(async_compute_done);
         async_done_count.store(0, std::memory_order_relaxed);
     }
     for (auto& result : shaders_done) {
@@ -691,10 +719,45 @@ void PipelineCache::DrainAsyncPipelines() {
         ++num_new_pipelines;
         graphics_pipelines.try_emplace(result.key, std::move(result.pipeline));
     }
+    for (auto& result : compute_done) {
+        async_compute_pending.erase(result.key);
+        RegisterPipelineData(result.key, result.sdata);
+        ++num_new_pipelines;
+        compute_pipelines.try_emplace(result.key, std::move(result.pipeline));
+    }
+}
+
+bool PipelineCache::AsyncComputeOn() const {
+    return async_compute && !BbToggle::Disabled(BbToggle::AsyncCompute);
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
-    if (!RefreshComputeKey()) {
+    if (async_pipelines && async_done_count.load(std::memory_order_acquire) != 0) {
+        DrainAsyncPipelines();
+    }
+    shader_pending = false;
+    if (!RefreshComputeKey() || shader_pending) {
+        shader_pending = false; // permutation translating on a compile thread: skipped
+        return nullptr;
+    }
+    if (AsyncComputeOn()) {
+        if (const auto found = compute_pipelines.find(compute_key);
+            found != compute_pipelines.end()) {
+            return found->second.get();
+        }
+        // Not built yet: queue it once and skip this dispatch.
+        if (async_compute_pending.insert(compute_key).second) {
+            AsyncComputeJob job{};
+            job.key = compute_key;
+            job.snapshot = std::make_unique<Shader::Info>(*sel.infos[0]);
+            job.live_info = sel.infos[0];
+            job.module = sel.modules[0];
+            {
+                std::scoped_lock lock{async_mutex};
+                async_compute_jobs.push_back(std::move(job));
+            }
+            async_cv.notify_one();
+        }
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
@@ -1166,11 +1229,12 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     if (it != program->modules.end()) {
         program->last_used = std::distance(program->modules.begin(), it);
     }
-    // Vertex and pixel programs only: tessellation stages read guest constant buffers while
-    // translating (ReadTessConstantBuffer), and compute dispatches must not be skipped.
+    // Vertex, pixel and compute programs: tessellation stages read guest constant buffers
+    // while translating (ReadTessConstantBuffer).
     if (it == program->modules.end() && async_shaders &&
-        (sw_stage == SwStage::Vertex || sw_stage == SwStage::Fragment) &&
-        !sel.regs->stage_enable.hs_en) {
+        ((sw_stage == SwStage::Compute && AsyncComputeOn()) ||
+         ((sw_stage == SwStage::Vertex || sw_stage == SwStage::Fragment) &&
+          !sel.regs->stage_enable.hs_en))) {
         // bbport: translated on a compile thread; this draw is skipped (see AsyncShaderJob).
         shader_pending = true;
         if (std::ranges::find(program->pending_specs, spec) == program->pending_specs.end()) {
