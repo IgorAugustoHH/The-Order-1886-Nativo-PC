@@ -97,6 +97,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             .value();
 
     backing_pool = std::make_unique<SparseBackingPool>(instance.GetAllocator());
+    if (const char* env = std::getenv("BB_EARLY_WRITEBACK"); env && env[0] == '0') {
+        early_writeback = false;
+    }
     std::printf("Buffer cache: pooled sparse backing (VMA), block %u KiB\n", block_size >> 10);
 
     const u64 bda_pagetable_size =
@@ -217,6 +220,8 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), arena->cpu_addr);
         const VAddr window_end = std::min<VAddr>(
             std::max<VAddr>(window_start + WindowSize, device_addr + size), arena_end);
+        // bbport: early write-backs usually already hold this data (see RecordWritebacks).
+        ApplyWritebacks(window_start, window_end - window_start);
         DownloadMemory(arena, window_start, window_end - window_start);
         if (is_write) {
             memory_tracker->MarkRegionAsCpuModified(device_addr, size);
@@ -251,6 +256,9 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         gpu_modified_ranges.Subtract(address, size);
     });
     if (total_size_bytes == 0) {
+        // bbport: nothing left to copy (early write-backs delivered it): just stop tracking
+        // the pages as GPU-modified, without waiting for the GPU.
+        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
         return;
     }
     Readbacks().NoteBytes(total_size_bytes);
@@ -268,6 +276,128 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                                 copy.size);
     }
     memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+}
+
+void BufferCache::RecordWritebacks() {
+    std::vector<std::pair<VAddr, u64>> ranges;
+    {
+        std::scoped_lock lock{frame_written_mutex};
+        ranges.swap(frame_written);
+    }
+    if (ranges.empty()) {
+        return;
+    }
+    std::ranges::sort(ranges);
+    std::vector<std::pair<VAddr, u64>> merged;
+    for (const auto& [addr, size] : ranges) {
+        if (!merged.empty() && addr <= merged.back().first + merged.back().second) {
+            const VAddr end = std::max(merged.back().first + merged.back().second, addr + size);
+            merged.back().second = end - merged.back().first;
+        } else {
+            merged.emplace_back(addr, size);
+        }
+    }
+    // Only what is still GPU-modified (a readback may have taken it), within a budget.
+    constexpr u64 MaxWritebackBytes = 32_MB;
+    std::vector<std::pair<VAddr, u64>> parts;
+    u64 total = 0;
+    for (const auto& [addr, size] : merged) {
+        gpu_modified_ranges.ForEachInRange(addr, size, [&](VAddr start, VAddr end) {
+            const u64 bytes = Common::AlignUp(end - start, 16);
+            if (total + bytes <= MaxWritebackBytes) {
+                parts.emplace_back(start, end - start);
+                total += bytes;
+            }
+        });
+    }
+    if (parts.empty()) {
+        return;
+    }
+    WritebackBatch batch{};
+    batch.staging = staging_pool.Request(total, MemoryType::HostCached, 0, true);
+    boost::container::small_vector<std::pair<const Buffer*, std::vector<vk::BufferCopy>>, 4> copies;
+    u64 offset = 0;
+    for (const auto& [addr, size] : parts) {
+        const auto* arena = GetArena(addr >> block_shift, (addr + size - 1) >> block_shift);
+        auto it = std::ranges::find(copies, arena, &decltype(copies)::value_type::first);
+        if (it == copies.end()) {
+            copies.emplace_back(arena, std::vector<vk::BufferCopy>{});
+            it = copies.end() - 1;
+        }
+        it->second.push_back(vk::BufferCopy{
+            .srcOffset = addr - arena->cpu_addr,
+            .dstOffset = batch.staging.offset + offset,
+            .size = size,
+        });
+        batch.items.push_back({addr, size, offset});
+        offset += Common::AlignUp(size, 16);
+    }
+    for (const auto& [arena, list] : copies) {
+        runtime.CopyBuffer(arena, batch.staging.buffer, list);
+    }
+    batch.tick = scheduler.CurrentTick(); // signalled by the flush that follows
+    std::scoped_lock lock{writeback_mutex};
+    writebacks.push_back(std::move(batch));
+}
+
+bool BufferCache::WrittenAgain(VAddr addr, u64 size) {
+    // Batches still queued are newer than the one being applied (oldest first).
+    for (const auto& batch : writebacks) {
+        for (const auto& item : batch.items) {
+            if (addr < item.addr + item.size && item.addr < addr + size) {
+                return true;
+            }
+        }
+    }
+    std::scoped_lock lock{frame_written_mutex};
+    for (const auto& [written, written_size] : frame_written) {
+        if (addr < written + written_size && written < addr + size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void BufferCache::ApplyWritebacks(VAddr wait_addr, u64 wait_size) {
+    if (!early_writeback) {
+        return;
+    }
+    std::scoped_lock lock{writeback_mutex};
+    if (wait_size) {
+        u64 needed = 0;
+        for (const auto& batch : writebacks) {
+            for (const auto& item : batch.items) {
+                if (wait_addr < item.addr + item.size && item.addr < wait_addr + wait_size) {
+                    needed = std::max(needed, batch.tick);
+                }
+            }
+        }
+        // Submitted already: waiting for it is much shorter than Finish (which also submits
+        // and waits for everything recorded since).
+        if (needed && needed < scheduler.CurrentTick() && !scheduler.IsFree(needed)) {
+            scheduler.Wait(needed);
+        }
+    }
+    while (!writebacks.empty() && scheduler.IsFree(writebacks.front().tick)) {
+        WritebackBatch batch = std::move(writebacks.front());
+        writebacks.pop_front();
+        batch.staging.buffer->Invalidate(batch.staging.offset, batch.staging.size);
+        for (const auto& item : batch.items) {
+            std::vector<std::pair<VAddr, VAddr>> still;
+            gpu_modified_ranges.ForEachInRange(
+                item.addr, item.size, [&](VAddr start, VAddr end) { still.emplace_back(start, end); });
+            for (const auto& [start, end] : still) {
+                if (WrittenAgain(start, end - start)) {
+                    continue; // a later write-back or on-demand readback brings it
+                }
+                memory->TryWriteBacking(
+                    reinterpret_cast<void*>(start),
+                    batch.staging.mapped + item.staging_offset + (start - item.addr), end - start);
+                gpu_modified_ranges.Subtract(start, end - start);
+            }
+        }
+        staging_pool.FreeDeferred(batch.staging);
+    }
 }
 
 namespace {
@@ -414,6 +544,13 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     }
     if (is_written) {
         gpu_modified_ranges.Add(device_addr, size);
+        // bbport: copied back at the end of the submission (RecordWritebacks); bigger
+        // bindings are left to on-demand readbacks.
+        constexpr u64 MaxWritebackRange = 4_MB;
+        if (early_writeback && size <= MaxWritebackRange) {
+            std::scoped_lock lock{frame_written_mutex};
+            frame_written.emplace_back(device_addr, size);
+        }
     }
     return {arena, arena->Offset(device_addr)};
 }

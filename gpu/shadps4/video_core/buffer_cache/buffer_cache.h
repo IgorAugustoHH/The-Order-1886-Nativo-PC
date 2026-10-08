@@ -6,6 +6,8 @@
 #include "bbport_copy.h"
 
 #include <deque>
+#include <mutex>
+#include <vector>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -15,6 +17,7 @@
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/buffer_cache/sparse_backing_pool.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 
 namespace AmdGpu {
 struct Liverpool;
@@ -113,6 +116,17 @@ public:
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
+    /// bbport: early write-back. At the end of a guest submission (GPU thread, before its
+    /// flush) the ranges shaders wrote are copied to host memory; once that submission
+    /// completes they are written to guest memory and stop being GPU-modified. The Order: 1886
+    /// writes, every frame, pages its shaders wrote: each write fault waited for the whole GPU
+    /// (Finish) to copy them back (a fifth of the GPU command thread). Without the copies the
+    /// game froze: it reads values the GPU writes there.
+    void RecordWritebacks();
+    /// Applies the write-backs whose submission completed. With a range: first waits for the
+    /// (already submitted) write-backs covering it, so the caller needs no Finish.
+    void ApplyWritebacks(VAddr wait_addr = 0, u64 wait_size = 0);
+
 private:
     struct ArenaBinds {
         const Buffer* arena;
@@ -164,6 +178,24 @@ private:
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
     RangeSet gpu_modified_ranges;
+
+    /// bbport: early write-back state (see RecordWritebacks).
+    struct WritebackItem {
+        VAddr addr;
+        u64 size;
+        u64 staging_offset;
+    };
+    struct WritebackBatch {
+        u64 tick{};
+        Vulkan::StagingBufferRef staging{};
+        std::vector<WritebackItem> items;
+    };
+    bool WrittenAgain(VAddr addr, u64 size);
+    bool early_writeback = true;
+    std::mutex frame_written_mutex;
+    std::vector<std::pair<VAddr, u64>> frame_written; ///< written ranges since the last record
+    std::recursive_mutex writeback_mutex;
+    std::deque<WritebackBatch> writebacks; ///< oldest first
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
