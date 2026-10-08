@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <filesystem>
+#include <set>
 #include <mutex>
 #include <thread>
 #include <xxhash.h>
@@ -2494,11 +2495,21 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
             !IsPlausibleImage(tsharp, memory)) {
-            static std::atomic<int> rejected_logged{0}; // bbport: per draw, so only the first few
-            if (rejected_logged.fetch_add(1) < 64)
+            // bbport: once per (program, texture slot), naming them: which pass draws without
+            // its texture (The Order: 1886 blurs the whole screen while aiming).
+            static std::mutex rejected_mutex;
+            static std::set<std::pair<u64, u32>> rejected_seen;
+            bool first_time;
+            {
+                std::scoped_lock lock{rejected_mutex};
+                first_time = rejected_seen.size() < 512 &&
+                             rejected_seen.emplace(stage.pgm_hash, image_index).second;
+            }
+            if (first_time)
             LOG_WARNING(Render_Vulkan,
-                        "Rejecting invalid T# address={:#x}, pitch={}, width={}, "
-                        "data_format={}, num_format={}",
+                        "Rejecting invalid T# in {} shader {:#x} slot {}: address={:#x}, "
+                        "pitch={}, width={}, data_format={}, num_format={}",
+                        magic_enum::enum_name(stage.sw_stage), stage.pgm_hash, image_index,
                         tsharp.Address(), tsharp.pitch, tsharp.width, static_cast<u32>(data_fmt),
                         static_cast<u32>(num_fmt));
             image_bindings.emplace_back(VideoCore::ImageId{}, &image_desc_storage.emplace_back());
