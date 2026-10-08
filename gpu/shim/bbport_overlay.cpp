@@ -429,7 +429,18 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
     const auto& s = BbSettings::Get();
-    ImGui::Text("%.0f FPS  %.1f мс  %s", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
+    if (const unsigned limit = s.frame_limit.load()) {
+        ImGui::Text("%.0f FPS  %.1f ms  limite %u  %s",
+                    frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg, limit,
+                    s.upscaler == BbSettings::UpscalerFsr3   ? "FSR 3.1"
+                    : s.upscaler == BbSettings::UpscalerFsr4 ? "FSR 4"
+                    : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
+                    : s.upscaler == BbSettings::UpscalerTaa ? "TAA"
+                                                             : "");
+        ImGui::End();
+        return;
+    }
+    ImGui::Text("%.0f FPS  %.1f ms  %s", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
                 frame_ms_avg,
                 s.upscaler == BbSettings::UpscalerFsr3   ? "FSR 3.1"
                 : s.upscaler == BbSettings::UpscalerFsr4 ? "FSR 4"

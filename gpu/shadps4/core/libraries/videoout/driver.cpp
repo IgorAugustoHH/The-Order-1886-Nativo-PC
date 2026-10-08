@@ -22,6 +22,7 @@
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
+#include "bbport_settings.h"
 #include "video_core/renderer_vulkan/bb_vram_report.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -601,6 +602,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // bbport: F9 cycles the limit 30/60/90/120 FPS while playing (The Order: 1886
     // cutscenes may need 30 FPS; testing which ones).
     u32 frame_limit = EmulatorSettings.GetFrameLimit();
+    BbSettings::Get().frame_limit.store(frame_limit);
     auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                     : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
@@ -631,6 +633,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             immediate_flips = true;
             next_flip = std::chrono::steady_clock::now();
             std::printf("VideoOut: F9, frame limit now %u FPS\n", frame_limit);
+            BbSettings::Get().frame_limit.store(frame_limit);
         }
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
 
