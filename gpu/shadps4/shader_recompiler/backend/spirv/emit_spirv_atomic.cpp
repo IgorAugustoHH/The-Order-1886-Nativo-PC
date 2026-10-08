@@ -271,6 +271,26 @@ Id EmitBufferAtomicUMin64(EmitContext& ctx, IR::Inst* inst, u32 handle, Id addre
     return BufferAtomicU64(ctx, inst, handle, address, value, &Sirit::Module::OpAtomicUMin);
 }
 
+/// bbport: runs `negative()` when the value's sign bit is set and `positive()` otherwise,
+/// in a selection construct, and returns the result of the one that ran.
+template <typename Negative, typename Positive>
+static Id AtomicByFloatSign(EmitContext& ctx, Id sign_bit_set, Negative&& negative,
+                            Positive&& positive) {
+    const Id negative_label = ctx.OpLabel();
+    const Id positive_label = ctx.OpLabel();
+    const Id merge_label = ctx.OpLabel();
+    ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(sign_bit_set, negative_label, positive_label);
+    ctx.AddLabel(negative_label);
+    const Id negative_result = negative();
+    ctx.OpBranch(merge_label);
+    ctx.AddLabel(positive_label);
+    const Id positive_result = positive();
+    ctx.OpBranch(merge_label);
+    ctx.AddLabel(merge_label);
+    return ctx.OpPhi(ctx.F32[1], negative_result, negative_label, positive_result, positive_label);
+}
+
 Id EmitBufferAtomicFMin32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address, Id value) {
     if (ctx.profile.supports_buffer_fp32_atomic_min_max) {
         return BufferAtomicU32<true>(ctx, inst, handle, address, value,
@@ -284,13 +304,14 @@ Id EmitBufferAtomicFMin32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id addre
         ctx.OpBitFieldUExtract(ctx.U32[1], u32_value, ctx.ConstU32(31u), ctx.ConstU32(1u)),
         ctx.u32_zero_value);
 
-    // FIXME this needs control flow because it currently executes both atomics
-    const auto result = ctx.OpSelect(
-        ctx.F32[1], sign_bit_set,
-        EmitBitCastF32U32(ctx, EmitBufferAtomicUMax32(ctx, inst, handle, address, u32_value)),
-        EmitBitCastF32U32(ctx, EmitBufferAtomicSMin32(ctx, inst, handle, address, u32_value)));
-
-    return result;
+    // bbport: one atomic, chosen by the sign. The select ran both (for a positive value, a max
+    // then a min on the same word: the last value written won), so float min/max reductions
+    // were garbage on GPUs without VK_EXT_shader_atomic_float2 (RTX 2060).
+    return AtomicByFloatSign(ctx, sign_bit_set, [&] {
+        return EmitBitCastF32U32(ctx, EmitBufferAtomicUMax32(ctx, inst, handle, address, u32_value));
+    }, [&] {
+        return EmitBitCastF32U32(ctx, EmitBufferAtomicSMin32(ctx, inst, handle, address, u32_value));
+    });
 }
 
 Id EmitBufferAtomicSMax32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address, Id value) {
@@ -322,13 +343,14 @@ Id EmitBufferAtomicFMax32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id addre
         ctx.OpBitFieldUExtract(ctx.U32[1], u32_value, ctx.ConstU32(31u), ctx.ConstU32(1u)),
         ctx.u32_zero_value);
 
-    // FIXME this needs control flow because it currently executes both atomics
-    const auto result = ctx.OpSelect(
-        ctx.F32[1], sign_bit_set,
-        EmitBitCastF32U32(ctx, EmitBufferAtomicUMin32(ctx, inst, handle, address, u32_value)),
-        EmitBitCastF32U32(ctx, EmitBufferAtomicSMax32(ctx, inst, handle, address, u32_value)));
-
-    return result;
+    // bbport: one atomic, chosen by the sign. The select ran both (for a positive value, a max
+    // then a min on the same word: the last value written won), so float min/max reductions
+    // were garbage on GPUs without VK_EXT_shader_atomic_float2 (RTX 2060).
+    return AtomicByFloatSign(ctx, sign_bit_set, [&] {
+        return EmitBitCastF32U32(ctx, EmitBufferAtomicUMin32(ctx, inst, handle, address, u32_value));
+    }, [&] {
+        return EmitBitCastF32U32(ctx, EmitBufferAtomicSMax32(ctx, inst, handle, address, u32_value));
+    });
 }
 
 Id EmitBufferAtomicInc32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address) {
@@ -402,12 +424,12 @@ Id EmitImageAtomicFMax32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords
         ctx.OpBitFieldUExtract(ctx.U32[1], u32_value, ctx.ConstU32(31u), ctx.ConstU32(1u)),
         ctx.u32_zero_value);
 
-    const auto result = ctx.OpSelect(
-        ctx.F32[1], sign_bit_set,
-        EmitBitCastF32U32(ctx, EmitImageAtomicUMin32(ctx, inst, handle, coords, u32_value)),
-        EmitBitCastF32U32(ctx, EmitImageAtomicSMax32(ctx, inst, handle, coords, u32_value)));
-
-    return result;
+    // bbport: one atomic, chosen by the sign (see AtomicByFloatSign).
+    return AtomicByFloatSign(ctx, sign_bit_set, [&] {
+        return EmitBitCastF32U32(ctx, EmitImageAtomicUMin32(ctx, inst, handle, coords, u32_value));
+    }, [&] {
+        return EmitBitCastF32U32(ctx, EmitImageAtomicSMax32(ctx, inst, handle, coords, u32_value));
+    });
 }
 
 Id EmitImageAtomicFMin32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id value) {
@@ -422,12 +444,12 @@ Id EmitImageAtomicFMin32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords
         ctx.OpBitFieldUExtract(ctx.U32[1], u32_value, ctx.ConstU32(31u), ctx.ConstU32(1u)),
         ctx.u32_zero_value);
 
-    const auto result = ctx.OpSelect(
-        ctx.F32[1], sign_bit_set,
-        EmitBitCastF32U32(ctx, EmitImageAtomicUMax32(ctx, inst, handle, coords, u32_value)),
-        EmitBitCastF32U32(ctx, EmitImageAtomicSMin32(ctx, inst, handle, coords, u32_value)));
-
-    return result;
+    // bbport: one atomic, chosen by the sign (see AtomicByFloatSign).
+    return AtomicByFloatSign(ctx, sign_bit_set, [&] {
+        return EmitBitCastF32U32(ctx, EmitImageAtomicUMax32(ctx, inst, handle, coords, u32_value));
+    }, [&] {
+        return EmitBitCastF32U32(ctx, EmitImageAtomicSMin32(ctx, inst, handle, coords, u32_value));
+    });
 }
 
 Id EmitImageAtomicInc32(EmitContext&, IR::Inst*, u32, Id, Id) {

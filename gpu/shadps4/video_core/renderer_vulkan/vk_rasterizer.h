@@ -5,6 +5,7 @@
 
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
+#include <unordered_set>
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_bind_helper.h"
@@ -464,6 +465,9 @@ private:
     boost::container::static_vector<ImageDescCacheEntry*, Shader::NUM_IMAGES> image_binding_entries;
     bool fault_process_pending{};
     bool attachment_feedback_loop{};
+    /// bbport: HTILE surfaces already marked uncompressed since their depth was last cleared
+    /// (see BeginRenderingFull).
+    std::unordered_set<VAddr> uncompressed_htiles;
     bool needs_barrier{};
     // bbport: two-stage draw pipeline (stage B state; the thread is the last member so it
     // stops first).

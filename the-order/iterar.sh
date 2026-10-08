@@ -64,9 +64,9 @@ export BB_CAPTURE_TRIGGER="${BB_CAPTURE_TRIGGER:-B:/Projeto the order 1886/work/
 export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas}"
 # Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
 # Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
-# evsmconvert_cs_msaa4x (sombra do sol vazia na run93: como ele lê a profundidade MSAA):
+# depthreduction (clear_xy, msaa2x_lag_xy, finalpass): as cascatas do sol saem minúsculas.
 # BB_RETRANSLATE ignora o cache deles para que sejam traduzidos (e gravados) de novo.
-export BB_DUMP_ONLY="${BB_DUMP_ONLY:-8ea0ef5b}"
+export BB_DUMP_ONLY="${BB_DUMP_ONLY:-7550d841,c6941be0,7b1b18c9}"
 export BB_RETRANSLATE="${BB_RETRANSLATE:-$BB_DUMP_ONLY}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh

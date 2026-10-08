@@ -1368,6 +1368,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
+        // bbport: the vertex stage's flattened user data as this draw read it (slot 99):
+        // constants the walker copied from guest memory (sun shadow matrices).
+        if (const auto flat = vs_info.FlatUserData(); !flat.empty()) {
+            FrameCapture::Buffer(vs_info.pgm_hash, 99, 0, flat.data(), flat.size_bytes());
+        }
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {
             char note[128];
             std::snprintf(note, sizeof(note), "\n  blend ps %08x idx %u: src %u dst %u func %u z %u%u",
@@ -3146,6 +3151,41 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             texture_cache.IsMetaCleared(htile_address, slice);
         const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
         texture_cache.TouchMeta(htile_address, slice, false);
+        // bbport: the host does not maintain HTILE, so the guest's copy keeps saying "cleared"
+        // after depth is drawn. The Order: 1886's EVSM conversion (evsmconvert_cs_msaa4x)
+        // reads it and skips cleared tiles: every sun shadow cascade came out empty (no sun
+        // shadows, sun missing where shading depends on them). Mark every tile uncompressed
+        // (zmask 0xf, as SynchronizeMemoryFromImage does for texel-buffer reads) when depth is
+        // about to be drawn after a clear, so readers fetch the real depth.
+        static std::unordered_set<VAddr> htile_logged; // once per depth surface
+        if (htile_address && htile_logged.size() < 64 &&
+            htile_logged.insert(image.info.guest_address).second) {
+            std::printf("HTILE: depth %#llx %ux%u, htile %#llx, depth %u write %u clear %u, %s\n",
+                        (unsigned long long)image.info.guest_address, image.info.size.width,
+                        image.info.size.height, (unsigned long long)htile_address,
+                        u32(regs.depth_control.depth_enable),
+                        u32(regs.depth_control.depth_write_enable), u32(is_depth_clear),
+                        uncompressed_htiles.contains(htile_address) ? "marked" : "not marked");
+        }
+        if (htile_address && regs.depth_control.depth_enable &&
+            regs.depth_control.depth_write_enable &&
+            (is_depth_clear || !uncompressed_htiles.contains(htile_address))) {
+            const auto& info = image.info;
+            const u32 tiles_x = Common::AlignUp((info.size.width + 7) / 8, 64u);
+            const u32 tiles_y = Common::AlignUp((info.size.height + 7) / 8, 64u);
+            const u64 size = memory->ClampRangeSize(
+                htile_address, u64(tiles_x) * tiles_y * 4 * std::max(info.resources.layers, 1u));
+            if (size) {
+                static constexpr u32 ZmaskUncompressed = 0xf;
+                const auto [buffer, offset] =
+                    buffer_cache.ObtainBuffer(htile_address, static_cast<u32>(size), true);
+                runtime.FillBuffer(buffer, offset, size, ZmaskUncompressed);
+                if (uncompressed_htiles.insert(htile_address).second) {
+                    std::printf("HTILE: %#llx marked uncompressed, %llu bytes\n",
+                                (unsigned long long)htile_address, (unsigned long long)size);
+                }
+            }
+        }
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
         const bool has_stencil = image.info.props.has_stencil;
@@ -3284,6 +3324,28 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         const auto* depth =
             db_desc.first ? &texture_cache.GetImage(db_desc.first).info : nullptr;
         FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth);
+        if (depth) {
+            // bbport: the depth state of the pass's first draw (sun shadow depth came out empty).
+            const auto& r = Regs();
+            const auto& vp = r.viewports[0];
+            const auto& vd = r.viewport_depths[0];
+            const std::string note = fmt::format(
+                "\n  depth state: test {} write {} func {} bounds {} [{} {}] clear {} ({}), "
+                "zclip near-off {} far-off {}, clamp-off {}, clip-space {}, cull {} front-ccw {}, "
+                "viewport z scale {} offset {} (enabled {} {}), z range [{} {}], "
+                "poly offset front {}",
+                u32(r.depth_control.depth_enable), u32(r.depth_control.depth_write_enable),
+                u32(r.depth_control.depth_func), u32(r.depth_control.depth_bounds_enable),
+                r.depth_bounds_min, r.depth_bounds_max, r.depth_clear,
+                u32(r.depth_render_control.depth_clear_enable),
+                u32(r.clipper_control.zclip_near_disable), u32(r.clipper_control.zclip_far_disable),
+                u32(r.depth_render_override.disable_viewport_clamp),
+                u32(r.clipper_control.clip_space), u32(r.polygon_control.CullingMode()),
+                u32(r.polygon_control.front_face), vp.zscale, vp.zoffset,
+                u32(r.viewport_control.zscale_enable), u32(r.viewport_control.zoffset_enable),
+                vd.zmin, vd.zmax, u32(r.polygon_control.enable_polygon_offset_front));
+            FrameCapture::Note(note.c_str());
+        }
     }
     // bbport: object motion vector attachment of G-buffer pipelines.
     if (key.motion_vectors) {

@@ -380,6 +380,22 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
     if (spv.empty()) {
         return false;
     }
+    // bbport: binaries from the broken float atomic min/max fallback (an unsigned and a signed
+    // atomic of opposite kinds on the same word, see AtomicByFloatSign) are translated again.
+    {
+        bool umax = false, smin = false, umin = false, smax = false;
+        for (size_t i = 5; i < spv.size();) {
+            const u32 count = spv[i] >> 16, opcode = spv[i] & 0xffff;
+            umax |= opcode == 239; // OpAtomicUMax
+            smin |= opcode == 236; // OpAtomicSMin
+            umin |= opcode == 237; // OpAtomicUMin
+            smax |= opcode == 238; // OpAtomicSMax
+            i += count ? count : 1;
+        }
+        if ((umax && smin) || (umin && smax)) {
+            return false;
+        }
+    }
 
     // bbport: the stored index belongs to the session that wrote it. A permutation already
     // loaded with the same identity is reused; otherwise it is appended, and this session's

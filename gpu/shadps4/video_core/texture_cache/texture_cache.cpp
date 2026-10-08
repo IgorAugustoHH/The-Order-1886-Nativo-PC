@@ -97,6 +97,10 @@ void TextureCache::DumpImage(VAddr address, const std::string& path) {
     }
     Image& image = slot_images[found];
     const auto& info = image.info;
+    if (info.props.is_depth && info.num_samples > 1) {
+        DumpMsaaDepth(image, path);
+        return;
+    }
     if (info.props.is_block || info.num_samples > 1) {
         std::printf("Image dump: %#llx is compressed or multisampled, skipped\n",
                     (unsigned long long)address);
@@ -134,6 +138,106 @@ void TextureCache::DumpImage(VAddr address, const std::string& path) {
         std::printf("Image dump: %#llx %ux%ux%u %s -> %s\n", (unsigned long long)address, width,
                     height, slices, vk::to_string(info.pixel_format).c_str(), path.c_str());
     }
+}
+
+/// Sample 0 of every pixel of a multisampled depth image (copies cannot read multisampled
+/// images; a depth resolve in an empty render pass can), saved like DumpImage.
+void TextureCache::DumpMsaaDepth(Image& image, const std::string& path) {
+    const auto& info = image.info;
+    const vk::Device device = instance.GetDevice();
+    const u32 width = info.size.width, height = info.size.height;
+    vk::ImageCreateInfo image_ci = image.backing->image.image_ci;
+    image_ci.flags = {};
+    image_ci.imageType = vk::ImageType::e2D;
+    image_ci.extent = vk::Extent3D{width, height, 1};
+    image_ci.mipLevels = 1;
+    image_ci.arrayLayers = 1;
+    image_ci.samples = vk::SampleCountFlagBits::e1;
+    image_ci.tiling = vk::ImageTiling::eOptimal;
+    image_ci.usage =
+        vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferSrc;
+    image_ci.initialLayout = vk::ImageLayout::eUndefined;
+    UniqueImage resolved{device, instance.GetAllocator()};
+    resolved.Create(image_ci);
+
+    const auto make_view = [&](vk::Image handle) {
+        return device
+            .createImageViewUnique(vk::ImageViewCreateInfo{
+                .image = handle,
+                .viewType = vk::ImageViewType::e2D,
+                .format = image_ci.format,
+                .subresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
+            })
+            .value;
+    };
+    const auto src_view = make_view(image.GetImage());
+    const auto dst_view = make_view(resolved.image);
+
+    constexpr auto layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+    scheduler.EndRendering();
+    runtime.Transit(&image, layout, vk::PipelineStageFlagBits2::eAllCommands,
+                    vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                        vk::AccessFlagBits2::eDepthStencilAttachmentWrite);
+    runtime.FlushBarriers();
+
+    const u32 texel = info.num_bits / 8;
+    const u64 size = u64(width) * height * 4; // the depth aspect copies as 32-bit floats
+    const auto staging = runtime.GetStagingPool().Request(size, MemoryType::HostCached, 16);
+    scheduler.Record([src = *src_view, dst = *dst_view, dst_image = resolved.image, width, height,
+                      buffer = staging.buffer->Handle(), offset = staging.offset,
+                      layout](vk::CommandBuffer cmdbuf) {
+        const auto barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
+            const vk::ImageMemoryBarrier2 b = {
+                .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                .oldLayout = from,
+                .newLayout = to,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = dst_image,
+                .subresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
+            };
+            cmdbuf.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1,
+                                                       .pImageMemoryBarriers = &b});
+        };
+        barrier(vk::ImageLayout::eUndefined, layout);
+        const vk::RenderingAttachmentInfo depth = {
+            .imageView = src,
+            .imageLayout = layout,
+            .resolveMode = vk::ResolveModeFlagBits::eSampleZero,
+            .resolveImageView = dst,
+            .resolveImageLayout = layout,
+            .loadOp = vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        };
+        cmdbuf.beginRendering(vk::RenderingInfo{
+            .renderArea = {{0, 0}, {width, height}},
+            .layerCount = 1,
+            .pDepthAttachment = &depth,
+        });
+        cmdbuf.endRendering();
+        barrier(layout, vk::ImageLayout::eTransferSrcOptimal);
+        const vk::BufferImageCopy copy = {
+            .bufferOffset = offset,
+            .imageSubresource{vk::ImageAspectFlagBits::eDepth, 0, 0, 1},
+            .imageExtent = {width, height, 1},
+        };
+        cmdbuf.copyImageToBuffer(dst_image, vk::ImageLayout::eTransferSrcOptimal, buffer, copy);
+    });
+    scheduler.Finish();
+    staging.Invalidate();
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        std::fprintf(f, "%u %u 1 4 %s-sample0\n", width, height,
+                     vk::to_string(info.pixel_format).c_str());
+        std::fwrite(staging.mapped, 1, size, f);
+        std::fclose(f);
+        std::printf("Image dump: %#llx %ux%u %s sample 0 (of %u) -> %s\n",
+                    (unsigned long long)info.guest_address, width, height,
+                    vk::to_string(info.pixel_format).c_str(), info.num_samples, path.c_str());
+    }
+    (void)texel;
 }
 
 void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
