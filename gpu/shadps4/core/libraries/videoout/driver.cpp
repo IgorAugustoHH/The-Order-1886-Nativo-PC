@@ -598,7 +598,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: frame limit (see EmulatorSettings::GetFrameLimit). A request waits in the queue
     // until its slot; slots advance by one period (no drift) but never lag behind by more.
-    // bbport: F9 switches the limit between 30 and 60 FPS while playing (The Order: 1886
+    // bbport: F9 cycles the limit 30/60/90/120 FPS while playing (The Order: 1886
     // cutscenes may need 30 FPS; testing which ones).
     u32 frame_limit = EmulatorSettings.GetFrameLimit();
     auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
@@ -624,7 +624,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     while (!token.stop_requested()) {
         timer.Start();
         if (bb_key_pressed(0x78 /* VK_F9 */)) {
-            frame_limit = frame_limit == 30 ? 60 : 30;
+            // 30 -> 60 -> 90 -> 120 -> 30 (testing how high the game holds up; its cutscene
+            // timing assumes 30).
+            frame_limit = frame_limit < 60 ? 60 : frame_limit < 90 ? 90 : frame_limit < 120 ? 120 : 30;
             frame_period = std::chrono::nanoseconds(1000000000 / frame_limit);
             immediate_flips = true;
             next_flip = std::chrono::steady_clock::now();
