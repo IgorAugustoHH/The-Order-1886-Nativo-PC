@@ -29,10 +29,10 @@ fi
 # FPS: com vblank de 60 Hz o flip só sai no próximo tique, e o jogo espera o "flip concluído" antes
 # do quadro seguinte: um quadro de 18 ms vira 33 ms (trava em 30). BB_VBLANK_HZ=0 mostra o quadro
 # assim que fica pronto (o jogo não usa o vblank como relógio, só o evento de flip).
-# Limite padrão 30, como no PS4: o jogo foi feito e testado só a 30 (escolha "cinematográfica" da
+# Limite padrão 60 (decisão do Igor, 08/10). O jogo foi feito e testado só a 30 (escolha "cinematográfica" da
 # Ready at Dawn) e a 60 as cutscenes quebram; a 30 ficou muito mais estável (run51).
 # F9 no jogo alterna 30/60. BB_FPS_LIMIT=60 bash iterar.sh -> começa em 60; 0 -> sem limite.
-export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-30}"
+export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-60}"
 # Cache de pipelines: os shaders recarregados do disco desenham errado (menu com partes faltando
 # nas run48-51, tela preta no início nas run53-54; a run52, com o cache vazio, abriu normal).
 # Até corrigir o carregamento, não pré-carrega: compila na hora (mais travadas na 1ª visita).

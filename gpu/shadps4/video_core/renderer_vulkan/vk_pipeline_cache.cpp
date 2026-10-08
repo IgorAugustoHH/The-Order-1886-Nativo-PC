@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <thread>
 #include <mutex>
 #include <ranges>
 #include <string>
@@ -277,6 +279,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
     return info;
 }
 
+extern std::atomic<u64> g_bb_compiles_total;
+
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              AmdGpu::Liverpool* liverpool_, u32 sparse_page_shift)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
@@ -347,10 +351,83 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     };
     WarmUp();
 
-    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
+    // bbport: the driver's pipeline cache persists between sessions. Every session compiled
+    // 2000-3000 pipelines at 36-65 ms each (The Order: 1886, 77-200 s of stalls) with no gain
+    // over the previous one. The driver validates the file (vendor, device, driver version)
+    // and starts empty when it does not match. BB_DRIVER_PIPELINE_CACHE=0 disables it.
+    const char* driver_cache_env = std::getenv("BB_DRIVER_PIPELINE_CACHE");
+    const bool persist = !(driver_cache_env && driver_cache_env[0] == '0');
+    const auto cache_path =
+        Common::FS::GetUserPath(Common::FS::PathType::ShaderDir) / "vk_pipeline_cache.bin";
+    std::vector<u8> initial;
+    if (persist) {
+        if (std::FILE* f = std::fopen(cache_path.string().c_str(), "rb")) {
+            std::fseek(f, 0, SEEK_END);
+            const long size = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (size > 0) {
+                initial.resize(size_t(size));
+                if (std::fread(initial.data(), 1, initial.size(), f) != initial.size()) {
+                    initial.clear();
+                }
+            }
+            std::fclose(f);
+        }
+    }
+    const vk::PipelineCacheCreateInfo cache_ci = {
+        .initialDataSize = initial.size(),
+        .pInitialData = initial.empty() ? nullptr : initial.data(),
+    };
+    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique(cache_ci);
+    if (cache_result != vk::Result::eSuccess && !initial.empty()) {
+        std::printf("Driver pipeline cache: file rejected (%s), starting empty\n",
+                    vk::to_string(cache_result).c_str());
+        initial.clear();
+        auto retry = instance.GetDevice().createPipelineCacheUnique({});
+        cache_result = retry.result;
+        cache = std::move(retry.value);
+    }
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+    if (!persist) {
+        return;
+    }
+    std::printf("Driver pipeline cache: loaded %.1f MiB from %s\n",
+                double(initial.size()) / (1024.0 * 1024.0), cache_path.string().c_str());
+    driver_cache_saver = std::jthread([this, cache_path](std::stop_token stop) {
+        const auto save = [&] {
+            auto [result, data] = instance.GetDevice().getPipelineCacheData(*pipeline_cache);
+            if (result != vk::Result::eSuccess || data.empty()) {
+                return;
+            }
+            auto temp = cache_path;
+            temp += ".tmp";
+            if (std::FILE* f = std::fopen(temp.string().c_str(), "wb")) {
+                const bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();
+                std::fclose(f);
+                std::error_code ec;
+                if (ok) {
+                    std::filesystem::rename(temp, cache_path, ec);
+                }
+            }
+        };
+        u64 saved_compiles = g_bb_compiles_total.load();
+        for (u32 ticks = 0; !stop.stop_requested(); ++ticks) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (ticks % 60 != 59) {
+                continue; // every 30 s
+            }
+            const u64 compiles = g_bb_compiles_total.load();
+            if (compiles != saved_compiles) {
+                saved_compiles = compiles;
+                save();
+            }
+        }
+        if (g_bb_compiles_total.load() != saved_compiles) {
+            save();
+        }
+    });
 }
 
 PipelineCache::~PipelineCache() = default;
@@ -358,6 +435,7 @@ PipelineCache::~PipelineCache() = default;
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+std::atomic<u64> g_bb_compiles_total; ///< never reset (the driver cache saver compares it)
 namespace {
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -366,6 +444,7 @@ struct CompileTimer {
                                    std::chrono::steady_clock::now() - start)
                                    .count());
         ++g_bb_compiles;
+        ++g_bb_compiles_total;
     }
 };
 } // namespace

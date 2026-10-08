@@ -5,6 +5,7 @@
 
 #include <unordered_map>
 #include <shared_mutex>
+#include <thread>
 #include <variant>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
@@ -185,6 +186,9 @@ private:
     AmdGpu::Liverpool* liverpool;
     DescriptorHeap desc_heap;
     vk::UniquePipelineCache pipeline_cache;
+    /// bbport: saves the driver's pipeline cache to disk now and then (declared after it, so it
+    /// stops first). See CreateDriverPipelineCache.
+    std::jthread driver_cache_saver;
     vk::UniquePipelineLayout pipeline_layout;
     Shader::Profile profile{};
     Shader::Pools pools;
