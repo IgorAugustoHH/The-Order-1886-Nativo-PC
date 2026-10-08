@@ -57,6 +57,8 @@ struct Program {
     Shader::Info info;
     ModuleList modules{};
     size_t last_used = 0; ///< bbport: permutation of the previous lookup, compared first
+    /// bbport: permutations being translated on a compile thread (GPU thread only).
+    std::vector<Shader::StageSpecialization> pending_specs;
     /// bbport: `info` as translated, for draw-preparation workers (they must not read `info`,
     /// whose user data the GPU thread rewrites every draw). Guarded by programs_mutex.
     std::unique_ptr<Shader::Info> info_template;
@@ -235,6 +237,30 @@ private:
         std::unique_ptr<GraphicsPipeline> pipeline;
         GraphicsPipeline::SerializationSupport sdata{};
     };
+    /// A new permutation of a known graphics program, translated on a compile thread. The
+    /// user data is copied; the code is read from guest memory (its address is the program's
+    /// base for inline constants).
+    struct AsyncShaderJob {
+        Program* program{};
+        Shader::StageSpecialization spec{};
+        Shader::HwStage hw_stage{};
+        Shader::SwStage sw_stage{};
+        std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
+        std::span<const u32> code{};
+        u64 hash{};
+        Shader::RuntimeInfo runtime_info{};
+        Shader::Backend::Bindings binding{};
+    };
+    struct AsyncShaderResult {
+        Program* program{};
+        Shader::StageSpecialization spec{};
+        vk::ShaderModule module{};
+        std::vector<u32> spv;
+    };
+    std::deque<AsyncShaderJob> async_shader_jobs;       ///< guarded by async_mutex
+    std::vector<AsyncShaderResult> async_shader_done;   ///< guarded by async_mutex
+    bool async_shaders = false;
+    bool shader_pending = false; ///< GPU thread: a stage's permutation is still translating
     void StartAsyncCompilers();
     void DrainAsyncPipelines();
     bool async_pipelines = false;

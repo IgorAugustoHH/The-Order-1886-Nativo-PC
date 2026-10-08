@@ -41,10 +41,14 @@ static Xbyak::CodeGenerator g_srt_codegen(128_MB);
 static const u8* g_srt_codegen_start = nullptr;
 /// Walker code -> its first copy: shaders recompiled with the same resource table reuse it.
 static std::unordered_map<std::string_view, const u8*> g_srt_walkers;
+/// bbport: shaders are also translated on compile threads (vk_pipeline_cache.cpp): walker
+/// emission into the shared code buffer and its dedupe map are serialized.
+static std::recursive_mutex g_srt_mutex;
 
 namespace Shader {
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
+    std::scoped_lock lock{g_srt_mutex};
     const auto func_addr = (PFN_SrtWalker)g_srt_codegen.getCurr();
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
@@ -958,6 +962,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
 }
 
 static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
+    std::scoped_lock lock{g_srt_mutex};
     Xbyak::CodeGenerator& c = g_srt_codegen;
 
     if (pass_info.srt_roots.empty()) {

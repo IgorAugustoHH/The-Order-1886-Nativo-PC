@@ -511,13 +511,16 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     sel.draw_indirect_params = params;
-    if (!RefreshGraphicsKey(sel)) {
+    if (async_pipelines && async_done_count.load(std::memory_order_acquire) != 0) {
+        DrainAsyncPipelines(); // finished permutations first: this draw may need one
+    }
+    shader_pending = false;
+    if (!RefreshGraphicsKey(sel) || shader_pending) {
+        shader_pending = false;
+        sel.fetch_shader.reset();
         return nullptr;
     }
     if (async_pipelines) {
-        if (async_done_count.load(std::memory_order_acquire) != 0) {
-            DrainAsyncPipelines();
-        }
         if (const auto found = graphics_pipelines.find(sel.graphics_key);
             found != graphics_pipelines.end()) {
             return found->second.get();
@@ -577,21 +580,57 @@ void PipelineCache::StartAsyncCompilers() {
     if (!async_pipelines) {
         return;
     }
+    const char* shaders_env = std::getenv("BB_ASYNC_SHADERS");
+    async_shaders = !(shaders_env && shaders_env[0] == '0');
     constexpr u32 NumCompilers = 2;
     for (u32 i = 0; i < NumCompilers; ++i) {
         async_compilers.emplace_back([this](std::stop_token stop) {
             Common::SetCurrentThreadName("bb:PipelineCompile");
+            Shader::Pools worker_pools; // the translator's pools are per thread
             for (;;) {
                 AsyncGraphicsJob job;
+                std::optional<AsyncShaderJob> shader_job;
                 {
                     std::unique_lock lock{async_mutex};
-                    async_cv.wait(lock,
-                                  [&] { return stop.stop_requested() || !async_jobs.empty(); });
+                    async_cv.wait(lock, [&] {
+                        return stop.stop_requested() || !async_jobs.empty() ||
+                               !async_shader_jobs.empty();
+                    });
                     if (stop.stop_requested()) {
                         return;
                     }
-                    job = std::move(async_jobs.front());
-                    async_jobs.pop_front();
+                    // Translations first: pipelines wait for them.
+                    if (!async_shader_jobs.empty()) {
+                        shader_job = std::move(async_shader_jobs.front());
+                        async_shader_jobs.pop_front();
+                    } else {
+                        job = std::move(async_jobs.front());
+                        async_jobs.pop_front();
+                    }
+                }
+                if (shader_job) {
+                    auto& sj = *shader_job;
+                    const Shader::ShaderParams params{
+                        .user_data = sj.user_data, .code = sj.code, .hash = sj.hash};
+                    Shader::Info info(sj.hw_stage, sj.sw_stage, params);
+                    AsyncShaderResult result{};
+                    {
+                        CompileTimer timer;
+                        const auto ir_program = Shader::TranslateProgram(
+                            sj.code, worker_pools, info, sj.runtime_info, profile);
+                        result.spv = Shader::Backend::SPIRV::EmitSPIRV(profile, sj.runtime_info,
+                                                                       ir_program, sj.binding);
+                        result.module = CompileSPV(result.spv, instance.GetDevice());
+                    }
+                    worker_pools.ReleaseContents();
+                    result.program = sj.program;
+                    result.spec = std::move(sj.spec);
+                    {
+                        std::scoped_lock lock{async_mutex};
+                        async_shader_done.push_back(std::move(result));
+                    }
+                    async_done_count.fetch_add(1, std::memory_order_release);
+                    continue;
                 }
                 std::array<const Shader::Info*, MaxShaderStages> infos{};
                 for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
@@ -621,10 +660,28 @@ void PipelineCache::StartAsyncCompilers() {
 
 void PipelineCache::DrainAsyncPipelines() {
     std::vector<AsyncGraphicsResult> done;
+    std::vector<AsyncShaderResult> shaders_done;
     {
         std::scoped_lock lock{async_mutex};
         done.swap(async_done);
+        shaders_done.swap(async_shader_done);
         async_done_count.store(0, std::memory_order_relaxed);
+    }
+    for (auto& result : shaders_done) {
+        Program& program = *result.program;
+        auto& pending = program.pending_specs;
+        if (const auto it = std::ranges::find_if(
+                pending, [&](const auto& spec) { return spec.SameCacheKey(result.spec); });
+            it != pending.end()) {
+            pending.erase(it);
+        }
+        const size_t perm_idx = program.modules.size();
+        const u64 perm_hash = HashCombine(program.info.pgm_hash, perm_idx);
+        RegisterShaderBinary(std::move(result.spv),
+                             RegisterShaderMeta(program.info, result.spec.fetch_shader_data,
+                                                result.spec, perm_hash, perm_idx));
+        std::unique_lock lk{programs_mutex};
+        program.AddPermut(result.module, std::move(result.spec));
     }
     for (auto& result : done) {
         async_pending.erase(result.key);
@@ -868,6 +925,10 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
         std::tie(sel.infos[stage_out_idx], sel.modules[stage_out_idx], fetch_shader_,
                  key.stage_hashes[stage_out_idx]) =
             GetProgram(sel, stage_in, stage_out, params, binding);
+        if (!sel.worker && shader_pending) {
+            // bbport: still translating: later stages would start from different bindings.
+            return false;
+        }
         if (fetch_shader_) {
             sel.fetch_shader = fetch_shader_;
         }
@@ -878,6 +939,9 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     sel.modules.fill(nullptr);
 
     bind_stage(HwStage::Fragment, SwStage::Fragment);
+    if (!sel.worker && shader_pending) {
+        return false;
+    }
 
     const auto* fs_info = sel.infos[static_cast<u32>(SwStage::Fragment)];
     key.mrt_mask = fs_info ? fs_info->mrt_mask : 0u;
@@ -1100,6 +1164,29 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
                   : std::ranges::find(program->modules, spec, &Program::Module::spec);
     if (it != program->modules.end()) {
         program->last_used = std::distance(program->modules.begin(), it);
+    }
+    if (it == program->modules.end() && async_shaders && hw_stage != HwStage::Compute) {
+        // bbport: translated on a compile thread; this draw is skipped (see AsyncShaderJob).
+        shader_pending = true;
+        if (std::ranges::find(program->pending_specs, spec) == program->pending_specs.end()) {
+            AsyncShaderJob job{};
+            job.program = program.get();
+            job.spec = spec;
+            job.hw_stage = hw_stage;
+            job.sw_stage = sw_stage;
+            std::ranges::copy(params.user_data, job.user_data.begin());
+            job.code = params.code;
+            job.hash = params.hash;
+            job.runtime_info = runtime_info;
+            job.binding = binding;
+            program->pending_specs.push_back(std::move(spec));
+            {
+                std::scoped_lock lock{async_mutex};
+                async_shader_jobs.push_back(std::move(job));
+            }
+            async_cv.notify_one();
+        }
+        return {};
     }
     if (it == program->modules.end()) {
         static const bool perm_trace = std::getenv("BB_PERM_TRACE") != nullptr;
