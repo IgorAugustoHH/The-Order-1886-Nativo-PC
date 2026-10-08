@@ -284,31 +284,41 @@ static ssize_t host_write(int h,const void *buffer,uint64_t size) { return write
 #define host_write write
 #endif
 /* Pages of the destination may be write-protected for GPU tracking: the kernel's copy then
- * fails with EFAULT instead of faulting to our handler. A user-mode write to each page first
- * goes through the handler, which unprotects it (and records the upcoming write). */
-static void touch_for_write(void *buffer,uint64_t size) {
-    if (!size) return;
-    uintptr_t p=(uintptr_t)buffer & ~(uintptr_t)4095, end=(uintptr_t)buffer+size;
-    for (; p<end; p+=4096) {
-        volatile unsigned char *b=(volatile unsigned char *)(p<(uintptr_t)buffer ? (uintptr_t)buffer : p);
-        *b=*b;
+ * fails with EFAULT instead of faulting to our handler. Touching each page first (a user-mode
+ * write, through the handler) still raced the GPU thread: it can upload a touched page (still
+ * holding the old data) and protect it again before the kernel's copy reaches it, and that
+ * copy then fails or leaves the GPU with stale contents. The Order: 1886 streams meshes
+ * (LODs) this way: objects flickered between correct and shattered. Reads land in a host
+ * buffer and are copied with user-mode writes, which fault to the handler on any page
+ * protected in the meantime. offset < 0: current file position. */
+static int64_t read_via_bounce(int h,void *buffer,uint64_t size,int64_t offset) {
+    enum { CHUNK = 4 << 20 };
+    static __thread unsigned char *bounce;
+    if (!bounce && !(bounce=malloc(CHUNK))) return -ENOMEM;
+    uint64_t done=0;
+    while (done<size) {
+        const uint64_t want=size-done<CHUNK ? size-done : CHUNK;
+        const ssize_t n=offset<0 ? host_read(h,bounce,want) : pread(h,bounce,want,offset+(int64_t)done);
+        if (n<0) return done ? (int64_t)done : -errno;
+        memcpy((unsigned char *)buffer+done,bounce,(size_t)n);
+        done+=(uint64_t)n;
+        if ((uint64_t)n<want) break;
     }
+    return (int64_t)done;
 }
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    touch_for_write(buffer,size);
-    ssize_t n=host_read(h,buffer,size);
-    if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
+    int64_t n=read_via_bounce(h,buffer,size,-1);
+    if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,(int)-n); return n; }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;
 }
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    touch_for_write(buffer,size);
-    ssize_t n=pread(h,buffer,size,offset);
-    if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
+    int64_t n=read_via_bounce(h,buffer,size,offset);
+    if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,(int)-n); return n; }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;
 }
