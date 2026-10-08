@@ -4,7 +4,9 @@
 #include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
+#include <algorithm>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <set>
 #include <string>
@@ -611,29 +613,66 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         // (the same in every lane), so the walker computes the source value itself.
         return ComputeOffset(c, reg, pass_info, inst->Arg(0));
     case IR::Opcode::Phi: {
-        // Control-flow merge: if every incoming value, other than the phi itself (a loop
-        // carrying it unchanged), is the same value, the offset is that value.
-        const IR::Value* common = nullptr;
-        for (size_t i = 0; i < inst->NumArgs(); ++i) {
-            const IR::Value& arg = inst->Arg(i);
-            if (!arg.IsImmediate() && arg.Inst() == inst) {
-                continue;
+        // Control-flow merge. Loops carry a value through a web of phis that reference each
+        // other (A <- B, B <- A), possibly through lane reads or bitcasts, which keep the bits.
+        // Following one phi at a time went round the web until the depth guard (The Order:
+        // 1886: five shaders, hundreds of permutations of garbage sharps). Walk the whole web
+        // once: if every value entering it from outside is the same, the offset is that value.
+        boost::container::small_vector<const IR::Inst*, 16> seen;
+        boost::container::small_vector<IR::Value, 16> work{off_dw};
+        std::optional<IR::Value> leaf;
+        while (!work.empty()) {
+            const IR::Value value = work.back();
+            work.pop_back();
+            if (!value.IsImmediate()) {
+                IR::Inst* const node = value.Inst();
+                const auto op = node->GetOpcode();
+                const bool transparent = op == IR::Opcode::Phi ||
+                                         op == IR::Opcode::ReadFirstLane ||
+                                         op == IR::Opcode::ReadLane ||
+                                         op == IR::Opcode::BitCastU32F32 ||
+                                         op == IR::Opcode::BitCastF32U32;
+                if (transparent) {
+                    if (std::ranges::find(seen, node) != seen.end()) {
+                        continue;
+                    }
+                    if (seen.size() >= 256) {
+                        NoteSrtReason("phi web too large");
+                        return false;
+                    }
+                    seen.push_back(node);
+                    if (op == IR::Opcode::Phi) {
+                        for (size_t i = 0; i < node->NumArgs(); ++i) {
+                            work.push_back(node->Arg(i));
+                        }
+                    } else {
+                        work.push_back(node->Arg(0));
+                    }
+                    continue;
+                }
             }
-            if (!common) {
-                common = &arg;
-            } else if (!(arg == *common)) {
-                LOG_ERROR(Render_Recompiler, "SRT offset phi merges different values");
+            // A value entering the web: compare by immediate, or by value number (the same
+            // expression computed in two blocks is the same offset).
+            const IR::Value canonical =
+                value.IsImmediate() ? value : IR::Value{pass_info.DeduplicateInstruction(value.Inst())};
+            if (!leaf) {
+                leaf = canonical;
+            } else if (leaf->IsImmediate() != canonical.IsImmediate() ||
+                       (canonical.IsImmediate() ? leaf->U32() != canonical.U32()
+                                                : leaf->Inst() != canonical.Inst())) {
+                NoteSrtReason("phi merges different offsets (loop index)");
                 return false;
             }
         }
-        if (!common) {
+        if (!leaf) {
+            NoteSrtReason("phi web without an incoming value");
             return false;
         }
-        if (common->IsImmediate()) {
-            c.mov(reg, common->U32());
+        if (leaf->IsImmediate()) {
+            c.mov(reg, leaf->U32());
             return true;
         }
-        return ComputeOffset(c, reg, pass_info, *common);
+        return ComputeOffset(c, reg, pass_info, *leaf);
     }
     default:
         NoteSrtReason(std::string("unsupported ") +
