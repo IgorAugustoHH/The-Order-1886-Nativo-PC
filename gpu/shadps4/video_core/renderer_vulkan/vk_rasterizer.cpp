@@ -285,6 +285,13 @@ bool IsPlausibleImage(const AmdGpu::Image& t, Core::MemoryManager* memory) {
         (t.Pitch() % 8 != 0 || t.Pitch() < u32(t.width) + 1)) {
         return false;
     }
+    // Volumes deeper and arrays longer than Vulkan's usual limits (2048) cannot be created
+    // anyway; run83 tried to upload a 1x1x7012 volume of 167 MiB.
+    constexpr u32 MaxSlices = 2048;
+    if (t.GetType() == AmdGpu::ImageType::Color3D ? u32(t.depth) + 1 > MaxSlices
+                                                   : t.NumLayers() > MaxSlices) {
+        return false;
+    }
     // Only the start must be mapped: the estimate above pads with the pitch and layers, and a
     // real texture at the end of its allocation was rejected (missing font glyphs in the menu).
     return memory->ClampRangeSize(t.Address(), 1) == 1;
@@ -2694,7 +2701,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
             if (FrameCapture::Active()) {
-                FrameCapture::Sampled(image.info, is_storage);
+                FrameCapture::Sampled(image.info, is_storage, desc.view_info.range.base.layer,
+                                      desc.view_info.range.extent.layers);
             }
 
             vk::ImageView view = *image_view.image_view;

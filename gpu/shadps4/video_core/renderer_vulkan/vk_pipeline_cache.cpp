@@ -420,6 +420,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             if (ticks % 60 != 59) {
                 continue; // every 30 s
             }
+            SaveRecentPipelines();
             const u64 compiles = g_bb_compiles_total.load();
             if (compiles != saved_compiles) {
                 saved_compiles = compiles;
@@ -429,6 +430,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         if (g_bb_compiles_total.load() != saved_compiles) {
             save();
         }
+        SaveRecentPipelines();
     });
 }
 
@@ -507,6 +509,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
             used_prepared = prepared;
+            NoteUsed(pipeline);
             return pipeline;
         }
     }
@@ -523,6 +526,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (async_pipelines) {
         if (const auto found = graphics_pipelines.find(sel.graphics_key);
             found != graphics_pipelines.end()) {
+            NoteUsed(found->second.get());
             return found->second.get();
         }
         // Not built yet: queue it once and skip this draw.
@@ -558,7 +562,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
 
-        RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        it.value()->storage_name = RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -571,6 +575,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
+    NoteUsed(it->second.get());
     return it->second.get();
 }
 
@@ -715,13 +720,14 @@ void PipelineCache::DrainAsyncPipelines() {
     for (auto& result : done) {
         async_pending.erase(result.key);
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(result.key);
-        RegisterPipelineData(result.key, pipeline_hash, result.sdata);
+        result.pipeline->storage_name =
+            RegisterPipelineData(result.key, pipeline_hash, result.sdata);
         ++num_new_pipelines;
         graphics_pipelines.try_emplace(result.key, std::move(result.pipeline));
     }
     for (auto& result : compute_done) {
         async_compute_pending.erase(result.key);
-        RegisterPipelineData(result.key, result.sdata);
+        result.pipeline->storage_name = RegisterPipelineData(result.key, result.sdata);
         ++num_new_pipelines;
         compute_pipelines.try_emplace(result.key, std::move(result.pipeline));
     }
@@ -743,6 +749,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (AsyncComputeOn()) {
         if (const auto found = compute_pipelines.find(compute_key);
             found != compute_pipelines.end()) {
+            NoteUsed(found->second.get());
             return found->second.get();
         }
         // Not built yet: queue it once and skip this dispatch.
@@ -770,7 +777,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
-        RegisterPipelineData(compute_key, sdata);
+        it.value()->storage_name = RegisterPipelineData(compute_key, sdata);
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -778,6 +785,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             module_related_pipelines[m].emplace_back(compute_key);
         }
     }
+    NoteUsed(it->second.get());
     return it->second.get();
 }
 

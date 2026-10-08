@@ -154,6 +154,16 @@ public:
 
     const ComputePipeline* GetComputePipeline();
 
+    /// bbport: records the pipelines this session uses (by pipeline cache name). The warm-up
+    /// then builds only those of the last sessions: building all 10k cached pipelines took
+    /// ~3.5 GB of system RAM in the driver and the RAM guard stopped the game (run83).
+    void NoteUsed(const Pipeline* pipeline) {
+        if (pipeline && pipeline->storage_name &&
+            !pipeline->used.load(std::memory_order_relaxed)) {
+            NoteUsedSlow(pipeline);
+        }
+    }
+
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule,
                               std::optional<Shader::Gcn::FetchShaderData>, u64>;
     Result GetProgram(PipelineSelection& sel, Shader::HwStage stage, Shader::SwStage l_stage,
@@ -184,6 +194,20 @@ private:
     /// bbport: SPIR-V of the last CompileModule, stored once its specialization (content key)
     /// is known. GPU thread only.
     std::vector<u32> last_spv;
+
+    /// bbport: recently used pipelines (see NoteUsed), in work/user/shader/pipelines_recentes.txt.
+    void NoteUsedSlow(const Pipeline* pipeline);
+    void LoadRecentPipelines();
+    void SaveRecentPipelines();
+    bool PreloadPipeline(u64 name, bool compute);
+    std::mutex recent_mutex;
+    std::vector<std::string> recent_used;                     ///< this session, guarded
+    std::vector<std::pair<std::string, u32>> recent_earlier;  ///< kept from earlier sessions
+    std::unordered_set<std::string> recent_preload;
+    bool recent_filter = false; ///< false: warm-up builds every cached pipeline
+    u32 recent_session = 1;
+    size_t recent_saved = 0;
+    u32 skipped_preloads = 0;
     const Shader::RuntimeInfo& BuildRuntimeInfo(PipelineSelection& sel, Shader::HwStage stage,
                                                 Shader::SwStage l_stage);
 

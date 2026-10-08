@@ -7,6 +7,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
+#include <atomic>
 #include <span>
 #include <boost/container/small_vector.hpp>
 
@@ -67,6 +68,11 @@ public:
     bool IsCompute() const {
         return is_compute;
     }
+
+    /// bbport: this pipeline's name in the pipeline cache (0: not stored there) and whether
+    /// this session used it (PipelineCache::NoteUsed).
+    u64 storage_name{};
+    mutable std::atomic<bool> used{false};
 
     using DescriptorWrites = std::vector<vk::WriteDescriptorSet>;
     void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data) const;

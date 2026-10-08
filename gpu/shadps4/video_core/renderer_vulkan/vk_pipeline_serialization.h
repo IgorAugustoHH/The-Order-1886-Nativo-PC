@@ -9,9 +9,9 @@
 
 namespace Vulkan {
 
-void RegisterPipelineData(const ComputePipelineKey& key,
+u64 RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata);
-void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
+u64 RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
                           GraphicsPipeline::SerializationSupport& sdata);
 /// bbport: stored permutations are keyed by their content (program hash and serialized
 /// specialization), not by the in-session permutation hash, which depends on the order the

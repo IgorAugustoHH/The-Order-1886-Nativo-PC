@@ -19,6 +19,8 @@ struct Target {
     VAddr address{};
     vk::Format format{};
     u32 width{}, height{};
+    /// Image depth (3D) or layers, and the layers the binding's view covers (sampled only).
+    u32 slices{1}, view_base{}, view_count{};
     bool operator==(const Target&) const = default;
 };
 
@@ -57,14 +59,23 @@ std::array<std::atomic<VAddr>, 16> display_list{};
 std::atomic<u32> display_count{0};
 
 Target ToTarget(const VideoCore::ImageInfo& info) {
-    return {info.guest_address, info.pixel_format, info.size.width, info.size.height};
+    return {info.guest_address, info.pixel_format, info.size.width, info.size.height,
+            std::max(info.resources.layers, info.size.depth)};
 }
 
 std::string Describe(const Target& t) {
     if (!t.address) {
         return "-";
     }
-    return std::format("{:#x} {} {}x{}", t.address, vk::to_string(t.format), t.width, t.height);
+    std::string text =
+        std::format("{:#x} {} {}x{}", t.address, vk::to_string(t.format), t.width, t.height);
+    if (t.slices > 1) {
+        text += std::format(" ({} slices)", t.slices);
+    }
+    if (t.view_count) {
+        text += std::format(" view layers {}+{}", t.view_base, t.view_count);
+    }
+    return text;
 }
 
 void AddSampled(Entry& entry) {
@@ -258,9 +269,13 @@ void FrameCapture::Buffer(u64 stage_hash, u32 slot, VAddr address, const void* d
     pending_buffers.push_back(std::move(out));
 }
 
-void FrameCapture::Sampled(const VideoCore::ImageInfo& info, bool storage) {
+void FrameCapture::Sampled(const VideoCore::ImageInfo& info, bool storage, u32 view_base,
+                           u32 view_count) {
     if (pending_sampled.size() < 64) {
-        pending_sampled.emplace_back(ToTarget(info), storage);
+        Target target = ToTarget(info);
+        target.view_base = view_base;
+        target.view_count = view_count;
+        pending_sampled.emplace_back(target, storage);
     }
 }
 

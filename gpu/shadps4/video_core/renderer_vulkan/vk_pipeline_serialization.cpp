@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <xxhash.h>
 #include "common/hash.h"
+#include "common/path_util.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -47,10 +51,10 @@ u64 PermutationContentKey(u64 pgm_hash, const Shader::StageSpecialization& spec)
 } // namespace
 
 
-void RegisterPipelineData(const ComputePipelineKey& key,
+u64 RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata) {
     if (!Storage::DataBase::Instance().IsOpened()) {
-        return;
+        return 0;
     }
 
     Serialization::Archive ar{};
@@ -60,7 +64,7 @@ void RegisterPipelineData(const ComputePipelineKey& key,
     ComputePipelineKey stored = key;
     stored.value = ContentOf(key.value);
     if (!stored.value) {
-        return;
+        return 0;
     }
 
     pldata.Write(Serialization::PipelineKeyVersion);
@@ -71,12 +75,13 @@ void RegisterPipelineData(const ComputePipelineKey& key,
 
     Storage::DataBase::Instance().Save(Storage::BlobType::PipelineKey,
                                        fmt::format("c_{:#018x}", stored.value), ar.TakeOff());
+    return stored.value;
 }
 
-void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
+u64 RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
                           GraphicsPipeline::SerializationSupport& sdata) {
     if (!Storage::DataBase::Instance().IsOpened()) {
-        return;
+        return 0;
     }
 
     Serialization::Archive ar{};
@@ -87,7 +92,7 @@ void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
     GraphicsPipelineKey stored = key;
     for (auto& stage_hash : stored.stage_hashes) {
         if (stage_hash && !(stage_hash = ContentOf(stage_hash))) {
-            return;
+            return 0;
         }
     }
     const u64 name = XXH3_64bits(&stored, sizeof(stored));
@@ -100,6 +105,7 @@ void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
 
     Storage::DataBase::Instance().Save(Storage::BlobType::PipelineKey,
                                        fmt::format("g_{:#018x}", name), ar.TakeOff());
+    return name;
 }
 
 
@@ -205,6 +211,7 @@ bool ComputePipeline::SerializationSupport::Deserialize(Serialization::Archive& 
 
 bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     compute_key.Deserialize(ar);
+    const u64 name = compute_key.value; // content key, as stored
 
     ComputePipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
@@ -225,11 +232,19 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     // bbport: stored with the content key; this session knows it by its own permutation hash.
     compute_key.value = local_perm_hash;
 
+    // bbport: the program and its permutation stay loaded; the pipeline itself only when a
+    // recent session used it (built on first use otherwise).
+    if (!PreloadPipeline(name, true)) {
+        sel.infos.fill(nullptr);
+        sel.modules.fill(nullptr);
+        return false;
+    }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key,
                                                        *sel.infos[0], sel.modules[0], sdata, true);
+        it.value()->storage_name = name;
     }
 
     sel.infos.fill(nullptr);
@@ -276,6 +291,8 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
 
 bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     sel.graphics_key.Deserialize(ar);
+    // Name as RegisterPipelineData stored it (the key with the stages' content keys).
+    const u64 name = XXH3_64bits(&sel.graphics_key, sizeof(sel.graphics_key));
 
     GraphicsPipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
@@ -310,11 +327,16 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         hash = local_perm_hash;
     }
 
+    if (!PreloadPipeline(name, false)) {
+        reset();
+        return false;
+    }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, true);
+        it.value()->storage_name = name;
     }
     reset();
     return is_new;
@@ -414,6 +436,7 @@ void PipelineCache::WarmUp() {
 
     u32 num_pipelines{};
     u32 num_total_pipelines{};
+    LoadRecentPipelines();
 
     Storage::DataBase::Instance().ForEachBlob(
         Storage::BlobType::PipelineKey, [&](std::vector<u8>&& data) {
@@ -444,12 +467,99 @@ void PipelineCache::WarmUp() {
         });
 
     LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
-    if (num_total_pipelines > num_pipelines) {
+    std::printf("Pipeline cache: %u of %u pipelines built at start (used in the last sessions), "
+                "%u on first use\n",
+                num_pipelines, num_total_pipelines, skipped_preloads);
+    if (num_total_pipelines > num_pipelines + skipped_preloads) {
         LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
-                    num_total_pipelines - num_pipelines);
+                    num_total_pipelines - num_pipelines - skipped_preloads);
     }
 
     Storage::DataBase::Instance().FinishPreload();
+}
+
+namespace {
+std::filesystem::path RecentPipelinesPath() {
+    return Common::FS::GetUserPath(Common::FS::PathType::ShaderDir) / "pipelines_recentes.txt";
+}
+std::string PipelineName(u64 name, bool compute) {
+    return fmt::format("{}_{:#018x}", compute ? 'c' : 'g', name);
+}
+/// Sessions whose pipelines the warm-up builds: this one's two predecessors.
+constexpr u32 RecentSessions = 2;
+} // namespace
+
+bool PipelineCache::PreloadPipeline(u64 name, bool compute) {
+    if (!recent_filter || recent_preload.contains(PipelineName(name, compute))) {
+        return true;
+    }
+    ++skipped_preloads;
+    return false;
+}
+
+void PipelineCache::NoteUsedSlow(const Pipeline* pipeline) {
+    if (pipeline->used.exchange(true)) {
+        return;
+    }
+    std::scoped_lock lock{recent_mutex};
+    recent_used.push_back(PipelineName(pipeline->storage_name, pipeline->IsCompute()));
+}
+
+// File: "sessao N" and then one "name session" line per pipeline.
+void PipelineCache::LoadRecentPipelines() {
+    std::ifstream file{RecentPipelinesPath()};
+    std::string word;
+    u32 last_session = 0;
+    if (!(file >> word >> last_session) || word != "sessao") {
+        // No list yet: nothing is preloaded (all of it is what exhausted the RAM); the
+        // driver's pipeline cache keeps first-use builds to a few milliseconds.
+        recent_filter = true;
+        return;
+    }
+    recent_session = last_session + 1;
+    std::string name;
+    u32 session = 0;
+    while (file >> name >> session) {
+        if (session + RecentSessions >= recent_session) {
+            recent_preload.insert(name);
+            recent_earlier.emplace_back(name, session);
+        }
+    }
+    recent_filter = true;
+}
+
+void PipelineCache::SaveRecentPipelines() {
+    std::vector<std::string> used;
+    {
+        std::scoped_lock lock{recent_mutex};
+        if (recent_used.size() == recent_saved) {
+            return;
+        }
+        recent_saved = recent_used.size();
+        used = recent_used;
+    }
+    std::unordered_set<std::string> current{used.begin(), used.end()};
+    const auto path = RecentPipelinesPath();
+    auto temp = path;
+    temp += ".tmp";
+    {
+        std::ofstream file{temp, std::ios::trunc};
+        file << "sessao " << recent_session << '\n';
+        for (const auto& name : used) {
+            file << name << ' ' << recent_session << '\n';
+        }
+        // Earlier sessions' entries the next session still preloads.
+        for (const auto& [name, session] : recent_earlier) {
+            if (session + RecentSessions > recent_session && !current.contains(name)) {
+                file << name << ' ' << session << '\n';
+            }
+        }
+        if (!file) {
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
 }
 
 void PipelineCache::Sync() {
