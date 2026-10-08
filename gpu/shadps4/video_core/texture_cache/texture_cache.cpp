@@ -72,6 +72,70 @@ void TextureCache::ProcessDownloadImages() {
     download_images.clear();
 }
 
+void TextureCache::DumpImage(VAddr address, const std::string& path) {
+    ImageId found{};
+    u64 found_size = 0;
+    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
+        // Every image starting here: a texture read of a render target can land on a copy.
+        if (image.info.guest_address == address) {
+            std::printf("Image dump: %#llx has image %u: %ux%ux%u %s, %u samples, %u layers, "
+                        "tick %llu%s\n",
+                        (unsigned long long)address, image_id.index, image.info.size.width,
+                        image.info.size.height, image.info.size.depth,
+                        vk::to_string(image.info.pixel_format).c_str(), image.info.num_samples,
+                        image.info.resources.layers, (unsigned long long)image.tick_accessed_last,
+                        True(image.flags & ImageFlagBits::GpuModified) ? ", GPU-modified" : "");
+        }
+        if (image.info.guest_address == address && image.info.guest_size > found_size) {
+            found = image_id;
+            found_size = image.info.guest_size;
+        }
+    });
+    if (!found) {
+        std::printf("Image dump: no image at %#llx\n", (unsigned long long)address);
+        return;
+    }
+    Image& image = slot_images[found];
+    const auto& info = image.info;
+    if (info.props.is_block || info.num_samples > 1) {
+        std::printf("Image dump: %#llx is compressed or multisampled, skipped\n",
+                    (unsigned long long)address);
+        return;
+    }
+    const u32 width = info.size.width, height = info.size.height;
+    const bool volume = info.props.is_volume;
+    const u32 slices = volume ? info.size.depth : info.resources.layers;
+    const u32 texel = info.num_bits / 8;
+    const u64 size = u64(width) * height * slices * texel;
+    const auto staging = runtime.GetStagingPool().Request(size, MemoryType::HostCached, 16);
+    const vk::BufferImageCopy copy = {
+        .bufferOffset = staging.offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
+                                                  : vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = volume ? 1u : slices,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {width, height, volume ? slices : 1u},
+    };
+    runtime.DownloadImage(&image, staging.buffer, std::span{&copy, 1});
+    scheduler.Finish();
+    staging.Invalidate();
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        std::fprintf(f, "%u %u %u %u %s\n", width, height, slices, texel,
+                     vk::to_string(info.pixel_format).c_str());
+        std::fwrite(staging.mapped, 1, size, f);
+        std::fclose(f);
+        std::printf("Image dump: %#llx %ux%ux%u %s -> %s\n", (unsigned long long)address, width,
+                    height, slices, vk::to_string(info.pixel_format).c_str(), path.c_str());
+    }
+}
+
 void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     Image& image = slot_images[image_id];
     if (False(image.flags & ImageFlagBits::GpuModified)) {

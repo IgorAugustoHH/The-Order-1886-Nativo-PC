@@ -352,6 +352,28 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         return false;
     }
 
+    // bbport: BB_RETRANSLATE=hash,hash (hex): those programs are not loaded from the cache, so
+    // the session translates (and with BB_DUMP_ONLY dumps) them again.
+    static const std::vector<u64> retranslate = [] {
+        std::vector<u64> list;
+        if (const char* env = std::getenv("BB_RETRANSLATE")) {
+            for (const char* p = env; *p;) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (end == p) {
+                    ++p;
+                    continue;
+                }
+                list.push_back(value);
+                p = end;
+            }
+        }
+        return list;
+    }();
+    if (std::ranges::find(retranslate, program->info.pgm_hash) != retranslate.end()) {
+        return false;
+    }
+
     std::vector<u32> spv{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
                                        fmt::format("{:#018x}_c", content_key), spv);

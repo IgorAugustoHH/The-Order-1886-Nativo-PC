@@ -12,6 +12,7 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include <signal.h>
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -189,6 +190,12 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 static LONG WINAPI unhandled_fault(EXCEPTION_POINTERS *info) { return fatal_exception(info); }
+/* abort() (failed asserts, std::terminate) ends the process without an exception. */
+static void abort_signal(int sig) {
+    (void)sig;
+    fprintf(stderr,"Fault: abort() on thread %lu\n",GetCurrentThreadId());
+    fflush(stderr);
+}
 /* Guest code reads its TCB with `mov rax, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
  * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
 uint32_t runtime_thread_tcb_offset(void);
@@ -478,6 +485,7 @@ int main(int argc, char **argv) {
     SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
     AddVectoredExceptionHandler(1, vectored_fault);
     SetUnhandledExceptionFilter(unhandled_fault);
+    signal(SIGABRT, abort_signal);
     {
         const char *guard = getenv("BB_RAM_GUARD_MB");
         const unsigned long guard_mb = guard ? strtoul(guard, NULL, 10) : 700;

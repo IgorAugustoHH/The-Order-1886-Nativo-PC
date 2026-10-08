@@ -38,6 +38,8 @@ namespace Vulkan {
 //   skipped. BB_SKIP_SHADERS=hash,... sets the initial list.
 // - capture_shaders.req: when it appears it is deleted, and for 300 ms every program used is
 //   counted; the list goes to captured_shaders.txt (hash, stage, draws, first color target).
+// - dump_images.req: hex guest addresses of images (from a frame capture); at the end of the
+//   next submission each is saved as img_<address>.bin (TextureCache::DumpImage).
 namespace {
 struct LiveShaderTools {
     struct Entry {
@@ -50,6 +52,9 @@ struct LiveShaderTools {
     std::atomic<bool> capturing{false};
     std::mutex mutex;
     std::vector<Entry> captured;
+    std::filesystem::path base;
+    std::atomic<bool> dump_pending{false};
+    std::vector<u64> dump_requests; ///< guarded by mutex
 
     static std::vector<u64> Parse(const std::string& text) {
         std::vector<u64> list;
@@ -80,6 +85,7 @@ struct LiveShaderTools {
         if (!dir) {
             return;
         }
+        base = dir;
         std::thread([this, base = std::filesystem::path(dir)] {
             std::string last_skip = "\x01"; // differs from any file: the first read applies
             for (;;) {
@@ -99,6 +105,19 @@ struct LiveShaderTools {
                     std::printf("Live shaders: skipping %zu shader(s)\n", skip.load()->size());
                 }
                 std::error_code ec;
+                if (std::FILE* f = std::fopen((base / "dump_images.req").string().c_str(), "rb")) {
+                    std::string request;
+                    char buf[4096];
+                    size_t n;
+                    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+                        request.append(buf, n);
+                    }
+                    std::fclose(f);
+                    std::filesystem::remove(base / "dump_images.req", ec);
+                    std::scoped_lock lock{mutex};
+                    dump_requests = Parse(request);
+                    dump_pending.store(true, std::memory_order_release);
+                }
                 if (std::filesystem::remove(base / "capture_shaders.req", ec)) {
                     {
                         std::scoped_lock lock{mutex};
@@ -1639,6 +1658,19 @@ void Rasterizer::OnSubmit() {
     buffer_cache.ApplyWritebacks();
     buffer_cache.RecordWritebacks();
     buffer_cache.OnSubmitted();
+    // bbport: images asked for in BB_LIVE_DIR/dump_images.req (frame analysis).
+    if (auto& tools = LiveTools(); tools.dump_pending.load(std::memory_order_acquire)) {
+        std::vector<u64> addresses;
+        {
+            std::scoped_lock lock{tools.mutex};
+            addresses.swap(tools.dump_requests);
+            tools.dump_pending.store(false);
+        }
+        for (const u64 address : addresses) {
+            texture_cache.DumpImage(
+                address, (tools.base / fmt::format("img_{:x}.bin", address)).string());
+        }
+    }
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
 }

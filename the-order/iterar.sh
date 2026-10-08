@@ -64,7 +64,10 @@ export BB_CAPTURE_TRIGGER="${BB_CAPTURE_TRIGGER:-B:/Projeto the order 1886/work/
 export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas}"
 # Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
 # Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
-export BB_DUMP_ONLY="${BB_DUMP_ONLY:-f5c17eec,8c8a4817,804aeead,a8792bbb}"
+# evsmconvert_cs_msaa4x (sombra do sol vazia na run93: como ele lê a profundidade MSAA):
+# BB_RETRANSLATE ignora o cache deles para que sejam traduzidos (e gravados) de novo.
+export BB_DUMP_ONLY="${BB_DUMP_ONLY:-8ea0ef5b}"
+export BB_RETRANSLATE="${BB_RETRANSLATE:-$BB_DUMP_ONLY}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then
@@ -81,5 +84,6 @@ R=$?
 # o timeout encerra o run.py; o jogo (bb-probe) pode sobrar segurando RAM/VRAM
 powershell -NoProfile -Command "Get-Process bb-probe -ErrorAction SilentlyContinue | Stop-Process -Confirm:\$false" >/dev/null 2>&1
 echo "EXIT $R -> $LOG"
+echo "iterar.sh: run.py terminou com $R" >> "$LOG"
 grep -E "^STOP|^API|^Caller|first argument|exception|fault|Unhandled|GPU:|rror" "$LOG" | head -20
 grep -vE "^Runtime: (guest thread|semaphore|mapped|direct allocation)" "$LOG" | grep -B12 -m1 "^STOP" | head -14

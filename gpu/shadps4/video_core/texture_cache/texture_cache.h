@@ -116,6 +116,10 @@ public:
     /// Schedules a copy of pending images for download back to CPU memory.
     void ProcessDownloadImages();
 
+    /// bbport: frame analysis: saves mip 0 of every layer of the image at `address` to `path`
+    /// (a one-line text header, then the texels as the GPU holds them). Waits for the GPU.
+    void DumpImage(VAddr address, const std::string& path);
+
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
 

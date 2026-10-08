@@ -21,6 +21,7 @@ struct Target {
     u32 width{}, height{};
     /// Image depth (3D) or layers, and the layers the binding's view covers (sampled only).
     u32 slices{1}, view_base{}, view_count{};
+    u32 samples{1};
     bool operator==(const Target&) const = default;
 };
 
@@ -60,7 +61,7 @@ std::atomic<u32> display_count{0};
 
 Target ToTarget(const VideoCore::ImageInfo& info) {
     return {info.guest_address, info.pixel_format, info.size.width, info.size.height,
-            std::max(info.resources.layers, info.size.depth)};
+            std::max(info.resources.layers, info.size.depth), 0, 0, info.num_samples};
 }
 
 std::string Describe(const Target& t) {
@@ -71,6 +72,9 @@ std::string Describe(const Target& t) {
         std::format("{:#x} {} {}x{}", t.address, vk::to_string(t.format), t.width, t.height);
     if (t.slices > 1) {
         text += std::format(" ({} slices)", t.slices);
+    }
+    if (t.samples > 1) {
+        text += std::format(" {}x MSAA", t.samples);
     }
     if (t.view_count) {
         text += std::format(" view layers {}+{}", t.view_base, t.view_count);

@@ -169,7 +169,11 @@ def main():
                    '--user', str(user_dir),
                    '--timeout', env.get('BB_TIMEOUT', '0'), *args]
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
-        return subprocess.run(command, stdin=subprocess.DEVNULL, creationflags=no_console()).returncode
+        code = subprocess.run(command, stdin=subprocess.DEVNULL, creationflags=no_console()).returncode
+        # The game's own exit code (0xC0000409: fail-fast, 0xC0000005: access violation, ...):
+        # some sessions ended with nothing else in the log.
+        print(f'Game exit code {code} ({code & 0xFFFFFFFF:#010x})', flush=True)
+        return code
     finally:
         if mod_view:
             shutil.rmtree(mod_view, ignore_errors=True)

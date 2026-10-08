@@ -883,7 +883,61 @@ static bool ZeroUnresolved() {
     return zero;
 }
 
+/// bbport: whether a value read from a resource table reaches a resource descriptor operand
+/// (T#, S#, V#), which needs a binding at draw time. Other values are data: The Order: 1886's
+/// materials read light parameters (position, colour, matrices) from per-light records indexed
+/// inside a loop, 14 values per shader; zero-filled, half the materials lit by the sun lost
+/// their lights. With direct memory access those are read from guest memory by the shader.
+static bool FeedsDescriptor(const IR::Inst* inst) {
+    const auto is_descriptor_operand = [](const IR::Inst* user, u32 operand) {
+        const std::string_view name = magic_enum::enum_name(user->GetOpcode());
+        if (name == "ImageHandle") {
+            return true;
+        }
+        if (name.starts_with("Image")) {
+            return operand <= 1; // image and sampler handles; the rest are coordinates
+        }
+        if (name.starts_with("LoadBuffer") || name.starts_with("StoreBuffer") ||
+            name.starts_with("BufferAtomic") || name == "ReadConstBuffer") {
+            return operand == 0;
+        }
+        return false;
+    };
+    boost::container::small_vector<const IR::Inst*, 64> work{inst};
+    boost::container::small_vector<const IR::Inst*, 64> seen{inst};
+    while (!work.empty()) {
+        const IR::Inst* const node = work.back();
+        work.pop_back();
+        for (const IR::Use& use : node->Uses()) {
+            if (is_descriptor_operand(use.user, use.operand)) {
+                return true;
+            }
+            if (use.user->GetOpcode() == IR::Opcode::ReadConst) {
+                continue; // an address: what is read there is its own lookup
+            }
+            if (std::ranges::find(seen, use.user) != seen.end()) {
+                continue;
+            }
+            if (seen.size() >= 4096) {
+                return true; // too far to tell: keep the null descriptor
+            }
+            seen.push_back(use.user);
+            work.push_back(use.user);
+        }
+    }
+    return false;
+}
+
+/// An unresolved lookup is left to direct memory access (flat buffer offset 0) when it is data
+/// and BB_DIRECT_MEMORY_ACCESS is on; descriptors get a null slot.
+static bool ReadFromMemory(const IR::Inst* use) {
+    return EmulatorSettings.IsDirectMemoryAccessEnabled() && !FeedsDescriptor(use);
+}
+
 static void ZeroFillSlot(IR::Inst* use, PassInfo& pass_info, Xbyak::CodeGenerator& c) {
+    if (ReadFromMemory(use)) {
+        return;
+    }
     c.mov(dword[rsi + (pass_info.dst_off_dw << 2)], 0);
     SetFlatbufOffset(use, pass_info.dst_off_dw);
     pass_info.dst_off_dw++;
@@ -910,6 +964,11 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
         subtree->GetOpcode() == IR::Opcode::ReadConstBuffer &&
             subtree->Flags<IR::BufferInstInfo>().flatbuf_off_dw == 0) {
+        // bbport: a pointer left to direct memory access: the shader reaches its data through
+        // it; descriptors read through it still need their null slots.
+        if (subtree->GetOpcode() == IR::Opcode::ReadConst && ReadFromMemory(subtree)) {
+            ZeroFillSubtree(subtree, pass_info, c);
+        }
         return;
     }
 

@@ -13,7 +13,9 @@
 #include <boost/asio/io_context.hpp>
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <chrono>
@@ -208,6 +210,23 @@ static void StartProfileWriter() {
 #endif
 
 extern "C" int bbgpu_init(const BbGpuConfig* config) {
+    // bbport: an uncaught C++ exception (Xbyak, std::bad_alloc, ...) ended the process with no
+    // message (sessions dying while the pipeline cache loaded, run70-run89). Name it first.
+    std::set_terminate([] {
+        const char* what = "unknown exception";
+        try {
+            if (const auto e = std::current_exception()) {
+                std::rethrow_exception(e);
+            }
+            what = "terminate without an exception";
+        } catch (const std::exception& e) {
+            what = e.what();
+        } catch (...) {
+        }
+        std::fprintf(stderr, "Fault: uncaught C++ exception: %s\n", what);
+        std::fflush(stderr);
+        std::abort();
+    });
     BbSettings::Load();
 #ifdef BB_PGO_GENERATE
     StartProfileWriter();
