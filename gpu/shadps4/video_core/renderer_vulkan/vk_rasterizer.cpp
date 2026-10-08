@@ -278,6 +278,13 @@ bool IsPlausibleImage(const AmdGpu::Image& t, Core::MemoryManager* memory) {
     if (bytes > MaxImageBytes) {
         return false;
     }
+    // A tiled surface's pitch is whole 8x8 micro tiles and at least its width. The garbage T#s
+    // behind run80's RAM exhaustion (32x27 with 6237 layers, 1x1x2737 volumes, 430-560 MiB
+    // each) had pitches of 770, 714, 2081 and 10953.
+    if (t.GetTileMode() != AmdGpu::TileMode::DisplayLinearAligned &&
+        (t.Pitch() % 8 != 0 || t.Pitch() < u32(t.width) + 1)) {
+        return false;
+    }
     // Only the start must be mapped: the estimate above pads with the pitch and layers, and a
     // real texture at the end of its allocation was rejected (missing font glyphs in the menu).
     return memory->ClampRangeSize(t.Address(), 1) == 1;

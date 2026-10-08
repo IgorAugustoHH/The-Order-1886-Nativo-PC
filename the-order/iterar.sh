@@ -56,6 +56,12 @@ printf '%s' "${BB_TOGGLES:-16384}" > "B:/Projeto the order 1886/work/toggles.txt
 # shaders usados em 300 ms.
 mkdir -p "/b/Projeto the order 1886/work/live"; : > "/b/Projeto the order 1886/work/live/skip_shaders.txt"
 export BB_LIVE_DIR="${BB_LIVE_DIR:-B:/Projeto the order 1886/work/live}"
+# Análise de quadro (vk_frame_capture.cpp): criar work/live/capturar_quadro.req grava o próximo
+# quadro inteiro (cada passada: alvos, formatos, shaders, texturas; cada compute) em
+# work/capturas/frame_*.txt. Nomes dos shaders: analise/shaders_nomes.txt.
+mkdir -p "/b/Projeto the order 1886/work/capturas"; rm -f "/b/Projeto the order 1886/work/live/capturar_quadro.req"
+export BB_CAPTURE_TRIGGER="${BB_CAPTURE_TRIGGER:-B:/Projeto the order 1886/work/live/capturar_quadro.req}"
+export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas}"
 # Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
 # Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
 export BB_DUMP_ONLY="${BB_DUMP_ONLY:-f5c17eec,8c8a4817,804aeead,a8792bbb}"

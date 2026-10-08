@@ -816,6 +816,23 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
     BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
+    // bbport: run80 stopped on system RAM after four uploads of ~550 MiB each (host staging plus
+    // a detiling buffer of the same size in VRAM). Which images are that big?
+    if (image.info.guest_size >= (128ull << 20)) {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 32) {
+            std::printf("Big image upload: %llu MiB at %#llx, %ux%ux%u, %u layers, %u mips, "
+                        "%u bits, vk format %u, type %u, pitch %u, tiling %u, %s%s\n",
+                        (unsigned long long)(image.info.guest_size >> 20),
+                        (unsigned long long)image.info.guest_address, image.info.size.width,
+                        image.info.size.height, image.info.size.depth,
+                        image.info.resources.layers, image.info.resources.levels,
+                        image.info.num_bits, u32(image.info.pixel_format), u32(image.info.type),
+                        image.info.pitch, u32(image.info.tile_mode),
+                        is_gpu_modified ? "GPU-modified " : "",
+                        image.info.props.is_tiled ? "tiled" : "linear");
+        }
+    }
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
         const u32 width = std::max(image.info.size.width >> m, 1u);
