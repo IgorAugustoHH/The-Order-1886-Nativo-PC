@@ -28,9 +28,11 @@ fi
 [ -z "${BB_COM_UPSCALER:-}" ] && export BB_UPSCALER=none BB_JITTER=0 BB_OBJECT_MOTION=0
 # FPS: com vblank de 60 Hz o flip só sai no próximo tique, e o jogo espera o "flip concluído" antes
 # do quadro seguinte: um quadro de 18 ms vira 33 ms (trava em 30). BB_VBLANK_HZ=0 mostra o quadro
-# assim que fica pronto (o jogo não usa o vblank como relógio, só o evento de flip). Limite de 60
-# por segurança (a física pode não aguentar mais). BB_FPS_LIMIT=0 bash iterar.sh -> sem limite.
-export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-60}"
+# assim que fica pronto (o jogo não usa o vblank como relógio, só o evento de flip).
+# Limite padrão 30, como no PS4: o jogo foi feito e testado só a 30 (escolha "cinematográfica" da
+# Ready at Dawn) e a 60 as cutscenes quebram; a 30 ficou muito mais estável (run51).
+# F9 no jogo alterna 30/60. BB_FPS_LIMIT=60 bash iterar.sh -> começa em 60; 0 -> sem limite.
+export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-30}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then

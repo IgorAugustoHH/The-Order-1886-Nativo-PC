@@ -35,6 +35,9 @@ constexpr u64 LARGE_IDLE_FRAMES = 3000;
 // of a 6 GB card. They go after 2 s idle, and only the upload ring keeps its reserve.
 // TickFrame runs on every submission, so this limit is in milliseconds.
 constexpr u64 DEVICE_IDLE_MS = 2000;
+// Dedicated upload buffers (bigger than a ring block) also go after 10 s idle: The Order: 1886
+// kept 18 of them, 1.4 GB of a 16 GB machine's RAM. The ring keeps its reserve.
+constexpr u64 HOST_LARGE_IDLE_MS = 10000;
 
 u64 NowMs() {
     return u64(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -217,7 +220,8 @@ void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache, MemoryType ty
     const bool host = type == MemoryType::HostUncached;
     const u64 now_ms = NowMs();
     std::erase_if(cache, [this, host, now_ms](const LargeBuffer& entry) {
-        const bool idle = host ? frame - entry.last_used_frame >= LARGE_IDLE_FRAMES
+        const bool idle = host ? frame - entry.last_used_frame >= LARGE_IDLE_FRAMES ||
+                                     now_ms - entry.last_used_ms >= HOST_LARGE_IDLE_MS
                                : now_ms - entry.last_used_ms >= DEVICE_IDLE_MS;
         return !entry.held && idle &&
                scheduler.IsFree(entry.tick);
