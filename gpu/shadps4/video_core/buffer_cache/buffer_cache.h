@@ -5,6 +5,7 @@
 
 #include "bbport_copy.h"
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <vector>
@@ -127,6 +128,14 @@ public:
     /// (already submitted) write-backs covering it, so the caller needs no Finish.
     void ApplyWritebacks(VAddr wait_addr = 0, u64 wait_size = 0);
 
+    /// bbport: called after each submission (Rasterizer::OnSubmit): writes the deferred
+    /// readbacks whose submission completed to guest memory.
+    void OnSubmitted() {
+        if (has_pending_readbacks.load(std::memory_order_relaxed)) {
+            ApplyDeferredReadbacks();
+        }
+    }
+
 private:
     struct ArenaBinds {
         const Buffer* arena;
@@ -191,6 +200,33 @@ private:
         std::vector<WritebackItem> items;
     };
     bool WrittenAgain(VAddr addr, u64 size);
+
+    /// bbport: deferred readbacks. A guest write beside (not on) GPU-written bytes of a page
+    /// goes on at once; those bytes are copied to host memory in the current submission and
+    /// written to guest memory once it completes. Until then uploads skip them (the arena holds
+    /// the newest data) and the guest's bytes at the fault are kept to spot later CPU writes.
+    struct DeferredItem {
+        VAddr addr;
+        u64 size;
+        u64 staging_offset;
+        u64 snapshot_offset;
+    };
+    struct DeferredBatch {
+        u64 tick{};
+        Vulkan::StagingBufferRef staging{};
+        std::vector<DeferredItem> items;
+        std::vector<u8> snapshot;
+    };
+    bool DeferReadback(const Buffer* arena, VAddr device_addr, u64 size);
+    void ApplyDeferredReadbacks();
+    /// Waits for the deferred readbacks overlapping the range and writes them to guest memory.
+    void WaitDeferredReadbacks(VAddr addr, u64 size);
+    bool PendingReadback(VAddr addr, u64 size);
+    std::mutex deferred_mutex;
+    std::deque<DeferredBatch> deferred_readbacks; ///< oldest first
+    RangeSet pending_readbacks; ///< GPU bytes of deferred_readbacks (guarded by deferred_mutex)
+    std::atomic<bool> has_pending_readbacks{false};
+    bool deferred_readbacks_enabled = true; ///< BB_DEFERRED_READBACK=0 turns it off
     bool early_writeback = false; ///< BB_EARLY_WRITEBACK=1 (no gain measured in run75)
     std::mutex frame_written_mutex;
     std::vector<std::pair<VAddr, u64>> frame_written; ///< written ranges since the last record

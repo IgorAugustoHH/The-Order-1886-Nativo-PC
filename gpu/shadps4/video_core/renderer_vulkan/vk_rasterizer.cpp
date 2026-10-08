@@ -1624,6 +1624,7 @@ void Rasterizer::OnSubmit() {
     // bbport: deliver finished write-backs, then copy back what this submission wrote.
     buffer_cache.ApplyWritebacks();
     buffer_cache.RecordWritebacks();
+    buffer_cache.OnSubmitted();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
 }
