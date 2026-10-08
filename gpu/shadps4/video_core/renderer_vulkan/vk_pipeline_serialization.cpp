@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <mutex>
+#include <unordered_map>
+#include <xxhash.h>
+#include "common/hash.h"
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -8,16 +12,40 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
-static constexpr u32 ShaderMetaVersion = 11u; // bbport: unresolved SRT lookups read zero
-static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)
+static constexpr u32 ShaderMetaVersion = 12u; // bbport: stored by content key
+static constexpr u32 PipelineKeyVersion = 6u; // bbport: stage hashes are content keys
 } // namespace Serialization
 
 namespace Vulkan {
+
+namespace {
+std::mutex g_content_mutex;
+std::unordered_map<u64, u64> g_perm_to_content; ///< in-session permutation hash -> content key
+
+u64 ContentOf(u64 perm_hash) {
+    std::scoped_lock lock{g_content_mutex};
+    const auto it = g_perm_to_content.find(perm_hash);
+    return it == g_perm_to_content.end() ? 0 : it->second;
+}
+
+/// Program hash, versions and the serialized specialization. Padding in the serialized
+/// structures can only make two sessions miss each other's entries, never mix them.
+u64 PermutationContentKey(u64 pgm_hash, const Shader::StageSpecialization& spec) {
+    Serialization::Archive ar;
+    spec.Serialize(ar);
+    const auto bytes = ar.TakeOff();
+    const u64 seed = pgm_hash ^ (u64{Serialization::ShaderMetaVersion} << 48) ^
+                     (u64{Serialization::ShaderBinaryVersion} << 32);
+    return XXH3_64bits_withSeed(bytes.data(), bytes.size(), seed) | 1; // never 0
+}
+} // namespace
+
 
 void RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata) {
@@ -28,14 +56,21 @@ void RegisterPipelineData(const ComputePipelineKey& key,
     Serialization::Archive ar{};
     Serialization::Writer pldata{ar};
 
+    // bbport: stored with the content key of its stage (see RegisterShaderMeta).
+    ComputePipelineKey stored = key;
+    stored.value = ContentOf(key.value);
+    if (!stored.value) {
+        return;
+    }
+
     pldata.Write(Serialization::PipelineKeyVersion);
     pldata.Write(u32{1}); // compute
 
-    key.Serialize(ar);
+    stored.Serialize(ar);
     sdata.Serialize(ar);
 
     Storage::DataBase::Instance().Save(Storage::BlobType::PipelineKey,
-                                       fmt::format("c_{:#018x}", key.value), ar.TakeOff());
+                                       fmt::format("c_{:#018x}", stored.value), ar.TakeOff());
 }
 
 void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
@@ -47,23 +82,45 @@ void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
     Serialization::Archive ar{};
     Serialization::Writer pldata{ar};
 
+    // bbport: stored with the content keys of its stages (see RegisterShaderMeta), under a
+    // name derived from them, not from the in-session hash.
+    GraphicsPipelineKey stored = key;
+    for (auto& stage_hash : stored.stage_hashes) {
+        if (stage_hash && !(stage_hash = ContentOf(stage_hash))) {
+            return;
+        }
+    }
+    const u64 name = XXH3_64bits(&stored, sizeof(stored));
+
     pldata.Write(Serialization::PipelineKeyVersion);
     pldata.Write(u32{0}); // graphics
 
-    key.Serialize(ar);
+    stored.Serialize(ar);
     sdata.Serialize(ar);
 
     Storage::DataBase::Instance().Save(Storage::BlobType::PipelineKey,
-                                       fmt::format("g_{:#018x}", hash), ar.TakeOff());
+                                       fmt::format("g_{:#018x}", name), ar.TakeOff());
 }
 
-void RegisterShaderMeta(const Shader::Info& info,
-                        const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
-                        const Shader::StageSpecialization& spec, size_t perm_hash,
-                        size_t perm_idx) {
-    if (!Storage::DataBase::Instance().IsOpened()) {
+
+
+void NotePermutationContent(u64 perm_hash, u64 content_key) {
+    if (!content_key) {
         return;
     }
+    std::scoped_lock lock{g_content_mutex};
+    g_perm_to_content[perm_hash] = content_key;
+}
+
+u64 RegisterShaderMeta(const Shader::Info& info,
+                       const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
+                       const Shader::StageSpecialization& spec, size_t perm_hash,
+                       size_t perm_idx) {
+    if (!Storage::DataBase::Instance().IsOpened()) {
+        return 0;
+    }
+    const u64 content_key = PermutationContentKey(info.pgm_hash, spec);
+    NotePermutationContent(perm_hash, content_key);
 
     Serialization::Archive ar;
     Serialization::Writer meta{ar};
@@ -71,24 +128,24 @@ void RegisterShaderMeta(const Shader::Info& info,
     meta.Write(Serialization::ShaderMetaVersion);
     meta.Write(Serialization::ShaderBinaryVersion);
 
-    meta.Write(perm_hash);
-    meta.Write(perm_idx);
+    meta.Write(content_key);
+    meta.Write(perm_idx); // informative: the loader assigns its own index
 
     spec.Serialize(ar);
     info.Serialize(ar);
 
     Storage::DataBase::Instance().Save(Storage::BlobType::ShaderMeta,
-                                       fmt::format("{:#018x}", perm_hash), ar.TakeOff());
+                                       fmt::format("{:#018x}", content_key), ar.TakeOff());
+    return content_key;
 }
 
-void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
-    if (!Storage::DataBase::Instance().IsOpened()) {
+void RegisterShaderBinary(std::vector<u32>&& spv, u64 content_key) {
+    if (!Storage::DataBase::Instance().IsOpened() || !content_key || spv.empty()) {
         return;
     }
 
     Storage::DataBase::Instance().Save(Storage::BlobType::ShaderBinary,
-                                       fmt::format("{:#018x}_{}", pgm_hash, perm_idx),
-                                       std::move(spv));
+                                       fmt::format("{:#018x}_c", content_key), std::move(spv));
 }
 
 bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
@@ -161,21 +218,24 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
 
     Serialization::Archive meta_ar{std::move(meta_blob)};
 
-    if (!LoadPipelineStage(meta_ar, 0)) {
+    u64 local_perm_hash{};
+    if (!LoadPipelineStage(meta_ar, 0, compute_key.value, local_perm_hash)) {
         return false;
     }
+    // bbport: stored with the content key; this session knows it by its own permutation hash.
+    compute_key.value = local_perm_hash;
 
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
-    ASSERT(is_new);
-
-    it.value() =
-        std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
-                                          compute_key, *sel.infos[0], sel.modules[0], sdata, true);
+    if (is_new) {
+        it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
+                                                       *pipeline_cache, compute_key,
+                                                       *sel.infos[0], sel.modules[0], sdata, true);
+    }
 
     sel.infos.fill(nullptr);
     sel.modules.fill(nullptr);
 
-    return true;
+    return is_new;
 }
 
 void GraphicsPipelineKey::Serialize(Serialization::Archive& ar) const {
@@ -220,8 +280,13 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     GraphicsPipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
 
+    const auto reset = [&] {
+        sel.infos.fill(nullptr);
+        sel.modules.fill(nullptr);
+        sel.fetch_shader.reset();
+    };
     for (int stage_idx = 0; stage_idx < MaxShaderStages; ++stage_idx) {
-        const auto& hash = sel.graphics_key.stage_hashes[stage_idx];
+        auto& hash = sel.graphics_key.stage_hashes[stage_idx];
         if (!hash) {
             continue;
         }
@@ -230,76 +295,77 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
                                            fmt::format("{:#018x}", hash), meta_blob);
         if (meta_blob.empty()) {
+            reset();
             return false;
         }
 
         Serialization::Archive meta_ar{std::move(meta_blob)};
 
-        if (!LoadPipelineStage(meta_ar, stage_idx)) {
+        u64 local_perm_hash{};
+        if (!LoadPipelineStage(meta_ar, stage_idx, hash, local_perm_hash)) {
+            reset();
             return false;
         }
+        // bbport: stored with content keys; this session knows the stages by its own hashes.
+        hash = local_perm_hash;
     }
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
-    ASSERT(is_new);
-
-    it.value() = std::make_unique<GraphicsPipeline>(
-        instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
-        sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, true);
-
-    sel.infos.fill(nullptr);
-    sel.modules.fill(nullptr);
-    sel.fetch_shader.reset();
-
-    return true;
+    if (is_new) {
+        it.value() = std::make_unique<GraphicsPipeline>(
+            instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
+            sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, true);
+    }
+    reset();
+    return is_new;
 }
 
-bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) {
+bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, u64 content_key,
+                                      u64& local_perm_hash) {
     auto program = std::make_unique<Program>();
     Shader::StageSpecialization spec{};
     spec.info = &program->info;
-    size_t perm_idx{};
-    if (!LoadShaderMeta(ar, program->info, sel.fetch_shader, spec, perm_idx)) {
+    size_t stored_idx{};
+    if (!LoadShaderMeta(ar, program->info, sel.fetch_shader, spec, stored_idx)) {
         return false;
     }
 
     std::vector<u32> spv{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
-                                       fmt::format("{:#018x}_{}", program->info.pgm_hash, perm_idx),
-                                       spv);
+                                       fmt::format("{:#018x}_c", content_key), spv);
     if (spv.empty()) {
         return false;
     }
 
-    // Permutation hash depends on shader variation index. To prevent collisions, we need insert it
-    // at the exact position rather than append
-
-    vk::ShaderModule module{};
-
-    auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
+    // bbport: the stored index belongs to the session that wrote it. A permutation already
+    // loaded with the same identity is reused; otherwise it is appended, and this session's
+    // permutation hash follows from where it lands.
+    const u64 pgm_hash = program->info.pgm_hash;
+    auto [it_pgm, new_program] = program_cache.try_emplace(pgm_hash);
     if (new_program) {
-        module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
-    } else {
-        const auto& modules = it_pgm.value()->modules;
-        if (perm_idx < modules.size() && modules[perm_idx].module) {
-            if (!modules[perm_idx].spec.SameCacheKey(spec)) {
-                LOG_WARNING(Render_Vulkan,
-                            "Cached permutation {} of {}_{:x} has conflicting metadata at its "
-                            "own index, skipping preload", perm_idx, program->info.hw_stage,
-                            program->info.pgm_hash);
-                return false;
-            }
-            module = modules[perm_idx].module;
-        } else {
-            module = CompileSPV(spv, instance.GetDevice());
+    }
+    Program& target = *it_pgm.value();
+    size_t perm_idx = target.modules.size();
+    for (size_t i = 0; i < target.modules.size(); ++i) {
+        if (target.modules[i].module && target.modules[i].spec.SameCacheKey(spec)) {
+            perm_idx = i;
+            break;
         }
     }
-    spec.info = &it_pgm.value()->info;
+    vk::ShaderModule module{};
+    spec.info = &target.info;
     sel.runtime_infos[stage] = spec.runtime_info;
-    it_pgm.value()->InsertPermut(module, std::move(spec), perm_idx);
+    if (perm_idx < target.modules.size()) {
+        module = target.modules[perm_idx].module;
+    } else {
+        module = CompileSPV(spv, instance.GetDevice());
+        target.AddPermut(module, std::move(spec));
+    }
+    local_perm_hash = HashCombine(pgm_hash, perm_idx);
+    NotePermutationContent(local_perm_hash, content_key);
 
-    sel.infos[stage] = &it_pgm.value()->info;
+    sel.infos[stage] = &target.info;
     sel.modules[stage] = module;
 
     return true;

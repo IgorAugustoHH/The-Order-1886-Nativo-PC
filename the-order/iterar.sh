@@ -33,11 +33,12 @@ fi
 # Ready at Dawn) e a 60 as cutscenes quebram; a 30 ficou muito mais estável (run51).
 # F9 no jogo alterna 30/60. BB_FPS_LIMIT=60 bash iterar.sh -> começa em 60; 0 -> sem limite.
 export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-60}"
-# Cache de pipelines: os shaders recarregados do disco desenham errado (menu com partes faltando
-# nas run48-51, tela preta no início nas run53-54; a run52, com o cache vazio, abriu normal).
-# Até corrigir o carregamento, não pré-carrega: compila na hora (mais travadas na 1ª visita).
-# BB_PIPELINE_CACHE=1 bash iterar.sh -> volta a pré-carregar.
-export BB_PIPELINE_CACHE="${BB_PIPELINE_CACHE:-0}"
+# Cache de pipelines ligado de novo (08/10). Ele guardava as variantes pelo número de chegada
+# na sessão: o mesmo número era outra variante em outra sessão, e os pipelines pré-carregados
+# saíam com o shader errado (menu com partes faltando nas run48-51, tela preta nas run53-54).
+# Agora as variantes são guardadas pelo conteúdo. O banco antigo ficou em user/cache_antigo4.
+# BB_PIPELINE_CACHE=0 bash iterar.sh -> desliga.
+export BB_PIPELINE_CACHE="${BB_PIPELINE_CACHE:-1}"
 # Chaves de otimização ao vivo: o número em work/toggles.txt (lido a cada 0,25 s) desliga as
 # otimizações do BBPort cujos bits estiverem ligados (gpu/shim/bbport_toggles.h). 0 = todas ligadas.
 export BB_TOGGLE_FILE="${BB_TOGGLE_FILE:-B:/Projeto the order 1886/work/toggles.txt}"

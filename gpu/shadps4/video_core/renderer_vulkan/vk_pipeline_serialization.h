@@ -13,9 +13,17 @@ void RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata);
 void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
                           GraphicsPipeline::SerializationSupport& sdata);
-void RegisterShaderMeta(const Shader::Info& info,
-                        const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
-                        const Shader::StageSpecialization& spec, size_t perm_hash, size_t perm_idx);
-void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx);
+/// bbport: stored permutations are keyed by their content (program hash and serialized
+/// specialization), not by the in-session permutation hash, which depends on the order the
+/// permutations appeared in: the same stored hash meant different permutations in different
+/// sessions, and preloaded pipelines were built with the wrong shaders (black screen, menu
+/// missing parts). Returns the content key, 0 when the cache is closed.
+u64 RegisterShaderMeta(const Shader::Info& info,
+                       const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
+                       const Shader::StageSpecialization& spec, size_t perm_hash, size_t perm_idx);
+void RegisterShaderBinary(std::vector<u32>&& spv, u64 content_key);
+/// Records which content key an in-session permutation hash stands for (pipelines are stored
+/// with content keys in place of their stage hashes).
+void NotePermutationContent(u64 perm_hash, u64 content_key);
 
 } // namespace Vulkan

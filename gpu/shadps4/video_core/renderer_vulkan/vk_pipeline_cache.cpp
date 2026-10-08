@@ -349,8 +349,6 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
     };
-    WarmUp();
-
     // bbport: the driver's pipeline cache persists between sessions. Every session compiled
     // 2000-3000 pipelines at 36-65 ms each (The Order: 1886, 77-200 s of stalls) with no gain
     // over the previous one. The driver validates the file (vendor, device, driver version)
@@ -390,6 +388,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+    // bbport: after the driver cache exists, so preloaded pipelines use it too.
+    WarmUp();
     if (!persist) {
         return;
     }
@@ -892,14 +892,14 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         module = CompileSPV(spv, instance.GetDevice());
     }
 
-    RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
-
     const auto name = GetShaderName(info.hw_stage, info.pgm_hash, perm_idx);
     Vulkan::SetObjectName(instance.GetDevice(), module, name);
     if (EmulatorSettings.IsShaderCollect()) {
         DebugState.CollectShader(name, info.sw_stage, module, spv, code,
                                  patch ? *patch : std::span<const u32>{}, is_patched);
     }
+    // bbport: stored by GetProgram once the specialization (content key) is known.
+    last_spv = std::move(spv);
     return module;
 }
 
@@ -957,7 +957,9 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
-        RegisterShaderMeta(new_program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+        RegisterShaderBinary(std::move(last_spv), RegisterShaderMeta(new_program->info,
+                                                                     spec.fetch_shader_data, spec,
+                                                                     perm_hash, 0));
         new_program->AddPermut(module, std::move(spec));
         new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
         Program* program = new_program.get();
@@ -1003,7 +1005,8 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 
-        RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+        RegisterShaderBinary(std::move(last_spv), RegisterShaderMeta(info, spec.fetch_shader_data,
+                                                                     spec, perm_hash, perm_idx));
         std::unique_lock lk{programs_mutex};
         program->AddPermut(module, std::move(spec));
     } else {
