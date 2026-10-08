@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <filesystem>
+#include <mutex>
+#include <thread>
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_toggles.h"
@@ -28,38 +31,142 @@
 
 namespace Vulkan {
 
-// bbport: BB_SKIP_SHADERS=hash,hash (hex program hashes, any stage, as the SRT walker log prints
-// them): draws and dispatches using those shaders are skipped, to find the pass behind a
-// visual bug (The Order: 1886 blurs the whole screen while aiming).
-static bool SkippedShader(const Pipeline* pipeline) {
-    static const std::vector<u64> hashes = [] {
+// bbport: live shader tools for hunting visual bugs (The Order: 1886 blurs the whole screen
+// while aiming), driven by files in BB_LIVE_DIR, polled every 250 ms:
+// - skip_shaders.txt: hex program hashes (any stage); draws and dispatches using them are
+//   skipped. BB_SKIP_SHADERS=hash,... sets the initial list.
+// - capture_shaders.req: when it appears it is deleted, and for 300 ms every program used is
+//   counted; the list goes to captured_shaders.txt (hash, stage, draws, first color target).
+namespace {
+struct LiveShaderTools {
+    struct Entry {
+        u64 hash;
+        int stage;
+        u32 count;
+        u32 width, height;
+    };
+    std::atomic<const std::vector<u64>*> skip{nullptr};
+    std::atomic<bool> capturing{false};
+    std::mutex mutex;
+    std::vector<Entry> captured;
+
+    static std::vector<u64> Parse(const std::string& text) {
         std::vector<u64> list;
-        if (const char* env = std::getenv("BB_SKIP_SHADERS")) {
-            for (const char* p = env; *p;) {
-                char* end = nullptr;
-                const u64 value = std::strtoull(p, &end, 16);
-                if (end == p) {
-                    ++p;
-                    continue;
-                }
-                list.push_back(value);
-                p = end;
+        for (const char* p = text.c_str(); *p;) {
+            char* end = nullptr;
+            const u64 value = std::strtoull(p, &end, 16);
+            if (end == p) {
+                ++p;
+                continue;
             }
-            std::printf("BB_SKIP_SHADERS: skipping %zu shader(s)\n", list.size());
+            list.push_back(value);
+            p = end;
         }
         return list;
-    }();
-    if (hashes.empty()) {
+    }
+
+    void SetSkip(std::vector<u64> list) {
+        // The old list is leaked on purpose: draws may still be reading it (a few per session).
+        skip.store(new std::vector<u64>(std::move(list)), std::memory_order_release);
+    }
+
+    LiveShaderTools() {
+        if (const char* env = std::getenv("BB_SKIP_SHADERS")) {
+            SetSkip(Parse(env));
+            std::printf("BB_SKIP_SHADERS: skipping %zu shader(s)\n", skip.load()->size());
+        }
+        const char* dir = std::getenv("BB_LIVE_DIR");
+        if (!dir) {
+            return;
+        }
+        std::thread([this, base = std::filesystem::path(dir)] {
+            std::string last_skip = "\x01"; // differs from any file: the first read applies
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                std::string text;
+                if (std::FILE* f = std::fopen((base / "skip_shaders.txt").string().c_str(), "rb")) {
+                    char buf[4096];
+                    size_t n;
+                    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+                        text.append(buf, n);
+                    }
+                    std::fclose(f);
+                }
+                if (text != last_skip) {
+                    last_skip = text;
+                    SetSkip(Parse(text));
+                    std::printf("Live shaders: skipping %zu shader(s)\n", skip.load()->size());
+                }
+                std::error_code ec;
+                if (std::filesystem::remove(base / "capture_shaders.req", ec)) {
+                    {
+                        std::scoped_lock lock{mutex};
+                        captured.clear();
+                    }
+                    capturing.store(true);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                    capturing.store(false);
+                    std::scoped_lock lock{mutex};
+                    std::ranges::sort(captured, {}, &Entry::count);
+                    if (std::FILE* f = std::fopen((base / "captured_shaders.txt").string().c_str(), "wb")) {
+                        for (const Entry& e : captured) {
+                            std::fprintf(f, "%#llx stage %d draws %u target %ux%u\n",
+                                         (unsigned long long)e.hash, e.stage, e.count, e.width,
+                                         e.height);
+                        }
+                        std::fclose(f);
+                    }
+                    std::printf("Live shaders: captured %zu program(s)\n", captured.size());
+                }
+            }
+        }).detach();
+    }
+
+    void Note(const Pipeline* pipeline, const AmdGpu::Regs* regs) {
+        u32 width = 0, height = 0;
+        if (regs && regs->color_buffers[0]) {
+            width = regs->color_buffers[0].Pitch();
+            height = regs->color_buffers[0].Height();
+        }
+        std::scoped_lock lock{mutex};
+        for (const Shader::Info* info : pipeline->GetStages()) {
+            if (!info) {
+                continue;
+            }
+            auto it = std::ranges::find_if(captured, [&](const Entry& e) {
+                return e.hash == info->pgm_hash && e.stage == int(info->sw_stage);
+            });
+            if (it == captured.end()) {
+                captured.push_back({info->pgm_hash, int(info->sw_stage), 1, width, height});
+            } else {
+                ++it->count;
+            }
+        }
+    }
+};
+
+LiveShaderTools& LiveTools() {
+    static LiveShaderTools tools;
+    return tools;
+}
+} // namespace
+
+static bool SkippedShader(const Pipeline* pipeline, const AmdGpu::Regs* regs = nullptr) {
+    auto& tools = LiveTools();
+    if (tools.capturing.load(std::memory_order_relaxed)) {
+        tools.Note(pipeline, regs);
+    }
+    const std::vector<u64>* hashes = tools.skip.load(std::memory_order_acquire);
+    if (!hashes || hashes->empty()) {
         return false;
     }
     for (const Shader::Info* info : pipeline->GetStages()) {
-        if (info && std::ranges::find(hashes, info->pgm_hash) != hashes.end()) {
+        if (info && std::ranges::find(*hashes, info->pgm_hash) != hashes->end()) {
             return true;
         }
     }
     return false;
 }
-
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -1044,7 +1151,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
-    if (SkippedShader(pipeline)) {
+    if (SkippedShader(pipeline, &Regs())) {
         return;
     }
     if (DrawPipe::OnStageB()) {
@@ -1277,7 +1384,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
 void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_indexed,
                                     const IndirectDraw& indirect) {
-    if (SkippedShader(pipeline)) {
+    if (SkippedShader(pipeline, &Regs())) {
         return;
     }
     if (DrawPipe::OnStageB()) {

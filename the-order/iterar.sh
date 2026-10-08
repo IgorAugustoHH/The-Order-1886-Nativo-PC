@@ -47,6 +47,11 @@ export BB_TOGGLE_FILE="${BB_TOGGLE_FILE:-B:/Projeto the order 1886/work/toggles.
 # constantes de outro desenho (achado na run60, desligando as otimizações uma a uma).
 # BB_TOGGLES=0 bash iterar.sh -> todas ligadas.
 printf '%s' "${BB_TOGGLES:-16384}" > "B:/Projeto the order 1886/work/toggles.txt"
+# Ferramentas de shader ao vivo (vk_rasterizer.cpp): work/live/skip_shaders.txt pula os shaders
+# listados (hashes hex); criar work/live/capture_shaders.req grava em captured_shaders.txt os
+# shaders usados em 300 ms.
+mkdir -p "/b/Projeto the order 1886/work/live"; : > "/b/Projeto the order 1886/work/live/skip_shaders.txt"
+export BB_LIVE_DIR="${BB_LIVE_DIR:-B:/Projeto the order 1886/work/live}"
 # Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
 # Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
 export BB_DUMP_ONLY="${BB_DUMP_ONLY:-f5c17eec,8c8a4817,804aeead,a8792bbb}"
