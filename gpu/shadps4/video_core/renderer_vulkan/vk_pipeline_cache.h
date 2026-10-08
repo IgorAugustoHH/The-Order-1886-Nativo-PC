@@ -4,7 +4,12 @@
 #pragma once
 
 #include <unordered_map>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <shared_mutex>
+#include <unordered_set>
 #include <thread>
 #include <variant>
 #include <boost/container/static_vector.hpp>
@@ -191,7 +196,7 @@ private:
     DescriptorHeap desc_heap;
     vk::UniquePipelineCache pipeline_cache;
     /// bbport: saves the driver's pipeline cache to disk now and then (declared after it, so it
-    /// stops first). See CreateDriverPipelineCache.
+    /// stops first).
     std::jthread driver_cache_saver;
     vk::UniquePipelineLayout pipeline_layout;
     Shader::Profile profile{};
@@ -211,6 +216,36 @@ private:
     tsl::robin_map<vk::ShaderModule,
                    std::vector<std::variant<GraphicsPipelineKey, ComputePipelineKey>>>
         module_related_pipelines;
+
+    /// bbport: graphics pipelines built on compile threads (BB_ASYNC_PIPELINES, on by default).
+    /// A draw whose pipeline is not built yet is skipped instead of stalling the GPU thread for
+    /// the driver's compilation (40-60 ms each; The Order: 1886 cutscenes spent most of their
+    /// time there). The job carries snapshots of the stages' Info: the GPU thread rewrites the
+    /// live ones every draw.
+    struct AsyncGraphicsJob {
+        GraphicsPipelineKey key{};
+        std::array<std::unique_ptr<Shader::Info>, MaxShaderStages> snapshots{};
+        std::array<const Shader::Info*, MaxShaderStages> live_infos{};
+        std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
+        std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
+        std::array<vk::ShaderModule, MaxShaderStages> modules{};
+    };
+    struct AsyncGraphicsResult {
+        GraphicsPipelineKey key{};
+        std::unique_ptr<GraphicsPipeline> pipeline;
+        GraphicsPipeline::SerializationSupport sdata{};
+    };
+    void StartAsyncCompilers();
+    void DrainAsyncPipelines();
+    bool async_pipelines = false;
+    std::mutex async_mutex;
+    std::condition_variable async_cv;
+    std::deque<AsyncGraphicsJob> async_jobs;        ///< guarded by async_mutex
+    std::vector<AsyncGraphicsResult> async_done;    ///< guarded by async_mutex
+    std::unordered_set<GraphicsPipelineKey> async_pending; ///< GPU thread only
+    std::atomic<u32> async_done_count{0};
+    /// Last: stopped and joined before anything they use is destroyed.
+    std::vector<std::jthread> async_compilers;
 };
 
 } // namespace Vulkan

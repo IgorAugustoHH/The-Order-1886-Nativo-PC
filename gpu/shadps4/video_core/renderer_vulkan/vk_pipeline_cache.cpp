@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "common/hash.h"
+#include "common/thread.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "core/debug_state.h"
@@ -390,6 +391,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     pipeline_cache = std::move(cache);
     // bbport: after the driver cache exists, so preloaded pipelines use it too.
     WarmUp();
+    StartAsyncCompilers();
     if (!persist) {
         return;
     }
@@ -430,7 +432,16 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     });
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    for (auto& compiler : async_compilers) {
+        compiler.request_stop();
+    }
+    {
+        std::scoped_lock lock{async_mutex}; // a compiler between its check and its wait
+    }
+    async_cv.notify_all();
+    async_compilers.clear();
+}
 
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
@@ -503,6 +514,36 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
     }
+    if (async_pipelines) {
+        if (async_done_count.load(std::memory_order_acquire) != 0) {
+            DrainAsyncPipelines();
+        }
+        if (const auto found = graphics_pipelines.find(sel.graphics_key);
+            found != graphics_pipelines.end()) {
+            return found->second.get();
+        }
+        // Not built yet: queue it once and skip this draw.
+        if (async_pending.insert(sel.graphics_key).second) {
+            AsyncGraphicsJob job{};
+            job.key = sel.graphics_key;
+            for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+                if (sel.infos[stage]) {
+                    job.snapshots[stage] = std::make_unique<Shader::Info>(*sel.infos[stage]);
+                    job.live_infos[stage] = sel.infos[stage];
+                }
+            }
+            job.runtime_infos = sel.runtime_infos;
+            job.fetch_shader = sel.fetch_shader;
+            job.modules = sel.modules;
+            {
+                std::scoped_lock lock{async_mutex};
+                async_jobs.push_back(std::move(job));
+            }
+            async_cv.notify_one();
+        }
+        sel.fetch_shader.reset();
+        return nullptr;
+    }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -528,6 +569,70 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         sel.fetch_shader.reset();
     }
     return it->second.get();
+}
+
+void PipelineCache::StartAsyncCompilers() {
+    const char* env = std::getenv("BB_ASYNC_PIPELINES");
+    async_pipelines = !(env && env[0] == '0');
+    if (!async_pipelines) {
+        return;
+    }
+    constexpr u32 NumCompilers = 2;
+    for (u32 i = 0; i < NumCompilers; ++i) {
+        async_compilers.emplace_back([this](std::stop_token stop) {
+            Common::SetCurrentThreadName("bb:PipelineCompile");
+            for (;;) {
+                AsyncGraphicsJob job;
+                {
+                    std::unique_lock lock{async_mutex};
+                    async_cv.wait(lock,
+                                  [&] { return stop.stop_requested() || !async_jobs.empty(); });
+                    if (stop.stop_requested()) {
+                        return;
+                    }
+                    job = std::move(async_jobs.front());
+                    async_jobs.pop_front();
+                }
+                std::array<const Shader::Info*, MaxShaderStages> infos{};
+                for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+                    infos[stage] = job.snapshots[stage].get();
+                }
+                AsyncGraphicsResult result{};
+                result.key = job.key;
+                {
+                    CompileTimer timer;
+                    result.pipeline = std::make_unique<GraphicsPipeline>(
+                        instance, scheduler, desc_heap, profile, job.key, *pipeline_cache, infos,
+                        job.runtime_infos, job.fetch_shader, job.modules, result.sdata, false);
+                }
+                result.pipeline->RebindStageInfos(job.live_infos);
+                {
+                    std::scoped_lock lock{async_mutex};
+                    async_done.push_back(std::move(result));
+                }
+                async_done_count.fetch_add(1, std::memory_order_release);
+            }
+        });
+    }
+    std::printf("Pipelines: built on %u compile threads (BB_ASYNC_PIPELINES=0: on the GPU "
+                "thread)\n",
+                NumCompilers);
+}
+
+void PipelineCache::DrainAsyncPipelines() {
+    std::vector<AsyncGraphicsResult> done;
+    {
+        std::scoped_lock lock{async_mutex};
+        done.swap(async_done);
+        async_done_count.store(0, std::memory_order_relaxed);
+    }
+    for (auto& result : done) {
+        async_pending.erase(result.key);
+        const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(result.key);
+        RegisterPipelineData(result.key, pipeline_hash, result.sdata);
+        ++num_new_pipelines;
+        graphics_pipelines.try_emplace(result.key, std::move(result.pipeline));
+    }
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {

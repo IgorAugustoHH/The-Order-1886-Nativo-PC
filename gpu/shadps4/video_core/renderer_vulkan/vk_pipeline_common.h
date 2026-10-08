@@ -7,6 +7,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
+#include <span>
 #include <boost/container/small_vector.hpp>
 
 namespace Shader {
@@ -34,6 +35,16 @@ public:
 
     vk::Pipeline Handle() const noexcept {
         return *pipeline;
+    }
+
+    /// bbport: a pipeline built on a compile thread from snapshots of the programs' Info points
+    /// back at the live ones (the GPU thread refreshes their user data every draw).
+    void RebindStageInfos(std::span<const Shader::Info* const> infos) {
+        for (size_t i = 0; i < infos.size() && i < stages.size(); ++i) {
+            if (infos[i] && stages[i]) {
+                stages[i] = infos[i];
+            }
+        }
     }
 
     vk::PipelineLayout GetLayout() const noexcept {
