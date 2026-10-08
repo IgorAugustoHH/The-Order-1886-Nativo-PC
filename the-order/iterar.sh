@@ -38,6 +38,9 @@ export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-30}"
 # Até corrigir o carregamento, não pré-carrega: compila na hora (mais travadas na 1ª visita).
 # BB_PIPELINE_CACHE=1 bash iterar.sh -> volta a pré-carregar.
 export BB_PIPELINE_CACHE="${BB_PIPELINE_CACHE:-0}"
+# Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
+# Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
+export BB_DUMP_ONLY="${BB_DUMP_ONLY:-f5c17eec,8c8a4817,804aeead,a8792bbb}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then
