@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <span>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -237,8 +238,20 @@ struct Info : InfoPersistent {
         bnd.user_data += ud_mask.NumRegs();
     }
 
+    /// bbport: the flattened buffer the GPU thread computed for the draw. A permutation
+    /// translated on a compile thread takes it instead of running the walker there: by then
+    /// the guest's resource tables may already be reused (garbage sharps, faults).
+    const std::vector<u32>* flatbuf_snapshot{};
+
     void RefreshFlatBuf() {
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
+        if (flatbuf_snapshot) {
+            std::fill(flattened_ud_buf.begin(), flattened_ud_buf.end(), 0u);
+            std::copy_n(flatbuf_snapshot->begin(),
+                        std::min(flatbuf_snapshot->size(), flattened_ud_buf.size()),
+                        flattened_ud_buf.begin());
+            return;
+        }
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {

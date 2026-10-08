@@ -246,6 +246,7 @@ private:
         Shader::HwStage hw_stage{};
         Shader::SwStage sw_stage{};
         std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
+        std::vector<u32> flatbuf; ///< the draw's flattened user data (see Info::flatbuf_snapshot)
         std::span<const u32> code{};
         u64 hash{};
         Shader::RuntimeInfo runtime_info{};

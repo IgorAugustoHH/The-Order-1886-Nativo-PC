@@ -613,6 +613,7 @@ void PipelineCache::StartAsyncCompilers() {
                     const Shader::ShaderParams params{
                         .user_data = sj.user_data, .code = sj.code, .hash = sj.hash};
                     Shader::Info info(sj.hw_stage, sj.sw_stage, params);
+                    info.flatbuf_snapshot = &sj.flatbuf;
                     AsyncShaderResult result{};
                     {
                         CompileTimer timer;
@@ -1165,7 +1166,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     if (it != program->modules.end()) {
         program->last_used = std::distance(program->modules.begin(), it);
     }
-    if (it == program->modules.end() && async_shaders && hw_stage != HwStage::Compute) {
+    // Vertex and pixel programs only: tessellation stages read guest constant buffers while
+    // translating (ReadTessConstantBuffer), and compute dispatches must not be skipped.
+    if (it == program->modules.end() && async_shaders &&
+        (sw_stage == SwStage::Vertex || sw_stage == SwStage::Fragment) &&
+        !sel.regs->stage_enable.hs_en) {
         // bbport: translated on a compile thread; this draw is skipped (see AsyncShaderJob).
         shader_pending = true;
         if (std::ranges::find(program->pending_specs, spec) == program->pending_specs.end()) {
@@ -1175,6 +1180,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
             job.hw_stage = hw_stage;
             job.sw_stage = sw_stage;
             std::ranges::copy(params.user_data, job.user_data.begin());
+            job.flatbuf = info.flattened_ud_buf; // refreshed for this draw above
             job.code = params.code;
             job.hash = params.hash;
             job.runtime_info = runtime_info;
