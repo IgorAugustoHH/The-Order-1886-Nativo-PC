@@ -33,6 +33,11 @@ fi
 # Ready at Dawn) e a 60 as cutscenes quebram; a 30 ficou muito mais estável (run51).
 # F9 no jogo alterna 30/60. BB_FPS_LIMIT=60 bash iterar.sh -> começa em 60; 0 -> sem limite.
 export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-30}"
+# Cache de pipelines: os shaders recarregados do disco desenham errado (menu com partes faltando
+# nas run48-51, tela preta no início nas run53-54; a run52, com o cache vazio, abriu normal).
+# Até corrigir o carregamento, não pré-carrega: compila na hora (mais travadas na 1ª visita).
+# BB_PIPELINE_CACHE=1 bash iterar.sh -> volta a pré-carregar.
+export BB_PIPELINE_CACHE="${BB_PIPELINE_CACHE:-0}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then
