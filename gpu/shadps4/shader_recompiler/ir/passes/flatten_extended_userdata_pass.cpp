@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <queue>
@@ -865,6 +866,41 @@ static inline void PopPtr(Xbyak::CodeGenerator& c) {
     c.pop(rdi);
 }
 
+// bbport: a lookup the walker cannot compute used to keep flat buffer offset 0, so the shader
+// read user data register 0 (usually a pointer) as part of a descriptor: plausible garbage
+// T#s/V#s (The Order: 1886's per-pixel texture tables: shattered textures, junk images and
+// permutations). It now gets its own slot holding zero: a null descriptor.
+// BB_SRT_GARBAGE=1 restores the old behaviour (comparisons).
+static bool ZeroUnresolved() {
+    static const bool zero = [] {
+        const char* env = std::getenv("BB_SRT_GARBAGE");
+        return !(env && env[0] == '1');
+    }();
+    return zero;
+}
+
+static void ZeroFillSlot(IR::Inst* use, PassInfo& pass_info, Xbyak::CodeGenerator& c) {
+    c.mov(dword[rsi + (pass_info.dst_off_dw << 2)], 0);
+    SetFlatbufOffset(use, pass_info.dst_off_dw);
+    pass_info.dst_off_dw++;
+}
+
+/// Every value read through `subtree` (a pointer whose own offset is unknown) reads zero.
+static void ZeroFillSubtree(IR::Inst* subtree, PassInfo& pass_info, Xbyak::CodeGenerator& c) {
+    PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
+    if (!use_list) {
+        return;
+    }
+    for (auto [src_off_dw, use] : *use_list) {
+        ZeroFillSlot(use, pass_info, c);
+    }
+    for (const auto [src_off_dw, use] : *use_list) {
+        if (pass_info.GetUsesAsPointer(use)) {
+            ZeroFillSubtree(use, pass_info, c);
+        }
+    }
+}
+
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
                          Xbyak::CodeGenerator& c) {
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
@@ -875,6 +911,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
 
     if (!Common::TryEmit(c, [&] { return PushPtr(c, pass_info, off_dw); })) {
         ++g_srt_failures;
+        if (ZeroUnresolved()) {
+            ZeroFillSubtree(subtree, pass_info, c);
+        }
         return;
     }
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
@@ -893,6 +932,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
                     return ComputeOffset(c, r10d, pass_info, src_off_dw);
                 })) {
                 ++g_srt_failures;
+                if (ZeroUnresolved()) {
+                    ZeroFillSlot(use, pass_info, c);
+                }
                 continue;
             }
             c.shl(r10d, 2);
