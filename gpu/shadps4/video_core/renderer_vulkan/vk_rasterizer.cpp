@@ -28,6 +28,39 @@
 
 namespace Vulkan {
 
+// bbport: BB_SKIP_SHADERS=hash,hash (hex program hashes, any stage, as the SRT walker log prints
+// them): draws and dispatches using those shaders are skipped, to find the pass behind a
+// visual bug (The Order: 1886 blurs the whole screen while aiming).
+static bool SkippedShader(const Pipeline* pipeline) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> list;
+        if (const char* env = std::getenv("BB_SKIP_SHADERS")) {
+            for (const char* p = env; *p;) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (end == p) {
+                    ++p;
+                    continue;
+                }
+                list.push_back(value);
+                p = end;
+            }
+            std::printf("BB_SKIP_SHADERS: skipping %zu shader(s)\n", list.size());
+        }
+        return list;
+    }();
+    if (hashes.empty()) {
+        return false;
+    }
+    for (const Shader::Info* info : pipeline->GetStages()) {
+        if (info && std::ranges::find(hashes, info->pgm_hash) != hashes.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
     // is encountered and implemented in the recompiler.
@@ -1011,6 +1044,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
+    if (SkippedShader(pipeline)) {
+        return;
+    }
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1241,6 +1277,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
 void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_indexed,
                                     const IndirectDraw& indirect) {
+    if (SkippedShader(pipeline)) {
+        return;
+    }
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1346,6 +1385,9 @@ void Rasterizer::DispatchDirect() {
 }
 
 void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
+    if (SkippedShader(pipeline)) {
+        return;
+    }
     FrameCapture::Poll();
     gbuffer_draw = false;
 
@@ -1418,6 +1460,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
 void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr address,
                                         u32 size) {
+    if (SkippedShader(pipeline)) {
+        return;
+    }
     scheduler.PopPendingOperations();
     const u32 offset = 0;
 

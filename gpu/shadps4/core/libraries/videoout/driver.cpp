@@ -34,6 +34,9 @@ extern std::atomic<u64> g_bb_compile_ns;
 extern std::atomic<u32> g_bb_compiles;
 } // namespace Vulkan
 
+/// bbport (src/compat_win.c): key pressed while the game window has the focus.
+extern "C" int bb_key_pressed(int vk);
+
 namespace Libraries::VideoOut {
 
 constexpr static bool Is32BppPixelFormat(PixelFormat format) {
@@ -595,9 +598,11 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: frame limit (see EmulatorSettings::GetFrameLimit). A request waits in the queue
     // until its slot; slots advance by one period (no drift) but never lag behind by more.
-    const u32 frame_limit = EmulatorSettings.GetFrameLimit();
-    const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
-                                          : std::chrono::nanoseconds(0);
+    // bbport: F9 switches the limit between 30 and 60 FPS while playing (The Order: 1886
+    // cutscenes may need 30 FPS; testing which ones).
+    u32 frame_limit = EmulatorSettings.GetFrameLimit();
+    auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
+                                    : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
     std::printf("VideoOut: vblank %u Hz, frame limit %u FPS\n",
                 EmulatorSettings.GetVblankFrequency(), frame_limit);
@@ -614,10 +619,17 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: with a frame limit (uncapped presets) a queued flip is presented as soon as it
     // arrives and its slot allows, between vblanks, instead of on the next vblank tick.
-    const bool immediate_flips = frame_limit != 0;
+    bool immediate_flips = frame_limit != 0;
 
     while (!token.stop_requested()) {
         timer.Start();
+        if (bb_key_pressed(0x78 /* VK_F9 */)) {
+            frame_limit = frame_limit == 30 ? 60 : 30;
+            frame_period = std::chrono::nanoseconds(1000000000 / frame_limit);
+            immediate_flips = true;
+            next_flip = std::chrono::steady_clock::now();
+            std::printf("VideoOut: F9, frame limit now %u FPS\n", frame_limit);
+        }
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
 
         if (DebugState.IsGuestThreadsPaused()) {

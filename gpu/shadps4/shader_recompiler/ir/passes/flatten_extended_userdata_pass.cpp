@@ -4,7 +4,10 @@
 #include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
+#include <mutex>
 #include <queue>
+#include <set>
+#include <string>
 #include <xbyak/xbyak.h>
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
@@ -127,6 +130,17 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
 }
 
 using namespace Shader;
+
+// bbport: SRT walker failures are counted per shader and reported once per program (the
+// per-lookup errors flooded the log without saying which shader they belonged to).
+static thread_local u32 g_srt_failures = 0;
+static thread_local std::string g_srt_reason;
+
+static void NoteSrtReason(std::string reason) {
+    if (g_srt_reason.empty()) {
+        g_srt_reason = std::move(reason);
+    }
+}
 
 struct PassInfo {
     struct PointerListCompare {
@@ -530,7 +544,7 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     // stack and the game vanished without a report. Real offset expressions are shallow.
     static thread_local int depth = 0;
     if (depth >= 32) {
-        LOG_ERROR(Render_Recompiler, "SRT offset expression too deep (cycle?)");
+        NoteSrtReason("offset expression too deep (cycle)");
         return false;
     }
     struct DepthGuard {
@@ -622,8 +636,8 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         return ComputeOffset(c, reg, pass_info, *common);
     }
     default:
-        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
-                  magic_enum::enum_name(inst->GetOpcode()));
+        NoteSrtReason(std::string("unsupported ") +
+                      std::string(magic_enum::enum_name(inst->GetOpcode())));
         return false;
     }
 }
@@ -656,7 +670,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
 
     if (!Common::TryEmit(c, [&] { return PushPtr(c, pass_info, off_dw); })) {
-        LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+        ++g_srt_failures;
         return;
     }
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
@@ -674,7 +688,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
             if (!Common::TryEmit(c, [&] {
                     return ComputeOffset(c, r10d, pass_info, src_off_dw);
                 })) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                ++g_srt_failures;
                 continue;
             }
             c.shl(r10d, 2);
@@ -925,7 +939,20 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
         }
     }
 
+    g_srt_failures = 0;
+    g_srt_reason.clear();
     GenerateSrtProgram(program.info, pass_info);
+    if (g_srt_failures != 0) {
+        static std::mutex mutex;
+        static std::set<u64> reported;
+        std::scoped_lock lock{mutex};
+        if (reported.insert(program.info.pgm_hash).second) {
+            LOG_ERROR(Render_Recompiler,
+                      "SRT walker: {} unresolved resource lookups in {} shader {:#x} ({})",
+                      g_srt_failures, magic_enum::enum_name(program.info.sw_stage),
+                      program.info.pgm_hash, g_srt_reason);
+        }
+    }
 
     // Assign offsets to duplicate readconsts
     for (IR::Inst* readconst : all_readconsts) {

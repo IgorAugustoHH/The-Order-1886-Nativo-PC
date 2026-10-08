@@ -159,4 +159,19 @@ int compat_cpu_times(int who, int64_t *user_us, int64_t *kernel_us) {
     *kernel_us = (int64_t)(((uint64_t)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) / 10);
     return 0;
 }
+
+int bb_key_pressed(int vk);
+
+/* bbport: a key pressed (edge, not held) while this process owns the foreground window;
+ * polled by the GPU library (F9: frame limit 30/60). */
+int bb_key_pressed(int vk) {
+    static unsigned char was_down[256];
+    HWND window = GetForegroundWindow();
+    DWORD pid = 0;
+    if (window) GetWindowThreadProcessId(window, &pid);
+    const int down = pid == GetCurrentProcessId() && (GetAsyncKeyState(vk) & 0x8000) != 0;
+    const int pressed = down && !was_down[vk & 0xff];
+    was_down[vk & 0xff] = (unsigned char)down;
+    return pressed;
+}
 #endif
