@@ -241,6 +241,8 @@ static inline void SetFlatbufOffset(IR::Inst* inst, u16 offset) {
 
 static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& pass_info,
                           const IR::Value& off_dw);
+static bool EmitBufferLoadComponent(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg,
+                                    PassInfo& pass_info, IR::Inst* load, u32 component);
 
 #define ABORT_ON_FAILURE(expr)                                                                     \
     if (!(expr)) {                                                                                 \
@@ -529,6 +531,29 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::UMin32:
     case IR::Opcode::UMax32:
     case IR::Opcode::BitFieldUExtract:
+    // bbport: buffer loads of a table offset (see EmitBufferLoadComponent); their V# and
+    // address operands must be collected like any other offset source.
+    case IR::Opcode::CompositeExtractU32x2:
+    case IR::Opcode::CompositeExtractU32x3:
+    case IR::Opcode::CompositeExtractU32x4:
+    case IR::Opcode::CompositeExtractF32x2:
+    case IR::Opcode::CompositeExtractF32x3:
+    case IR::Opcode::CompositeExtractF32x4:
+    case IR::Opcode::CompositeConstructU32x2:
+    case IR::Opcode::CompositeConstructU32x3:
+    case IR::Opcode::CompositeConstructU32x4:
+    case IR::Opcode::CompositeConstructF32x2:
+    case IR::Opcode::CompositeConstructF32x3:
+    case IR::Opcode::CompositeConstructF32x4:
+    case IR::Opcode::LoadBufferU32:
+    case IR::Opcode::LoadBufferF32:
+    case IR::Opcode::LoadBufferU32x2:
+    case IR::Opcode::LoadBufferU32x3:
+    case IR::Opcode::LoadBufferU32x4:
+    case IR::Opcode::LoadBufferF32x2:
+    case IR::Opcode::LoadBufferF32x3:
+    case IR::Opcode::LoadBufferF32x4:
+    case IR::Opcode::LoadBufferFormatF32:
         return true;
     default:
         return false;
@@ -674,11 +699,151 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         }
         return ComputeOffset(c, reg, pass_info, *leaf);
     }
+    case IR::Opcode::LoadBufferU32:
+    case IR::Opcode::LoadBufferF32:
+        return EmitBufferLoadComponent(c, reg, pass_info, inst, 0);
+    case IR::Opcode::CompositeExtractU32x2:
+    case IR::Opcode::CompositeExtractU32x3:
+    case IR::Opcode::CompositeExtractU32x4:
+    case IR::Opcode::CompositeExtractF32x2:
+    case IR::Opcode::CompositeExtractF32x3:
+    case IR::Opcode::CompositeExtractF32x4: {
+        // bbport: one component of a vector. A vector built from scalars gives that scalar;
+        // anything else is reported with what the vector came from (The Order: 1886: fifteen
+        // fragment shaders, 14 lookups each, read their table offset from a float4).
+        const IR::Value composite = inst->Arg(0);
+        if (!composite.IsImmediate() && inst->Arg(1).IsImmediate()) {
+            IR::Inst* const source = composite.Inst();
+            const u32 index = inst->Arg(1).U32();
+            switch (source->GetOpcode()) {
+            case IR::Opcode::CompositeConstructU32x2:
+            case IR::Opcode::CompositeConstructU32x3:
+            case IR::Opcode::CompositeConstructU32x4:
+            case IR::Opcode::CompositeConstructF32x2:
+            case IR::Opcode::CompositeConstructF32x3:
+            case IR::Opcode::CompositeConstructF32x4:
+                if (index < source->NumArgs()) {
+                    return ComputeOffset(c, reg, pass_info, source->Arg(index));
+                }
+                break;
+            case IR::Opcode::LoadBufferFormatF32:
+            case IR::Opcode::LoadBufferF32x2:
+            case IR::Opcode::LoadBufferF32x3:
+            case IR::Opcode::LoadBufferF32x4:
+            case IR::Opcode::LoadBufferU32x2:
+            case IR::Opcode::LoadBufferU32x3:
+            case IR::Opcode::LoadBufferU32x4:
+                return EmitBufferLoadComponent(c, reg, pass_info, source, index);
+            default:
+                break;
+            }
+            std::string reason = std::string(magic_enum::enum_name(inst->GetOpcode())) + " of " +
+                                 std::string(magic_enum::enum_name(source->GetOpcode())) + "(";
+            for (size_t i = 0; i < source->NumArgs(); ++i) {
+                const IR::Value arg = source->Arg(i);
+                reason += i ? ", " : "";
+                reason += arg.IsImmediate()
+                              ? std::to_string(arg.U32())
+                              : std::string(magic_enum::enum_name(arg.Inst()->GetOpcode()));
+            }
+            NoteSrtReason(reason + ")");
+            return false;
+        }
+        NoteSrtReason(std::string(magic_enum::enum_name(inst->GetOpcode())) +
+                      " with a dynamic index");
+        return false;
+    }
     default:
         NoteSrtReason(std::string("unsupported ") +
                       std::string(magic_enum::enum_name(inst->GetOpcode())));
         return false;
     }
+}
+
+// bbport: one 32-bit component of a buffer load, read by the walker from guest memory. The Order:
+// 1886's material shaders (251 programs) read their texture table offset from a buffer
+// (buffer_load_format) whose V# and address are uniform, then index the resource table with it.
+// Address as CalculateBufferAddress (resource_patching_pass), without swizzle or thread-id
+// addressing: base + index * stride + inst_offset + soffset + voffset + component * 4.
+static bool EmitBufferLoadComponent(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg,
+                                    PassInfo& pass_info, IR::Inst* load, u32 component) {
+    const auto info = load->Flags<IR::BufferInstInfo>();
+    if (info.typed && info.inst_data_fmt != AmdGpu::DataFormat::FormatInvalid) {
+        const auto fmt = info.inst_data_fmt.Value();
+        if (fmt != AmdGpu::DataFormat::Format32 && fmt != AmdGpu::DataFormat::Format32_32 &&
+            fmt != AmdGpu::DataFormat::Format32_32_32 &&
+            fmt != AmdGpu::DataFormat::Format32_32_32_32) {
+            NoteSrtReason("buffer load with a non-32-bit typed format");
+            return false;
+        }
+    }
+    const IR::Value handle = load->Arg(0);
+    const IR::Value address = load->Arg(1);
+    if (handle.IsImmediate() || address.IsImmediate() ||
+        handle.Inst()->GetOpcode() != IR::Opcode::CompositeConstructU32x4 ||
+        address.Inst()->GetOpcode() != IR::Opcode::CompositeConstructU32x3) {
+        NoteSrtReason("buffer load with an unexpected handle or address");
+        return false;
+    }
+    IR::Inst* const v_sharp = handle.Inst();
+    IR::Inst* const addr = address.Inst();
+    const IR::Value index = addr->Arg(0);
+    const IR::Value voffset = addr->Arg(1);
+    const IR::Value soffset = addr->Arg(2);
+    const u32 constant = info.inst_offset.Value() + component * 4 +
+                         (soffset.IsImmediate() ? soffset.U32() : 0);
+
+    // Stack: V# dword 1 (base high bits, stride), dword 0 (base low bits), byte offset.
+    ABORT_ON_FAILURE(ComputeOffset(c, reg, pass_info, v_sharp->Arg(1)));
+    c.push(reg.cvt64());
+    POP_ABORT_ON_FAILURE(ComputeOffset(c, reg, pass_info, v_sharp->Arg(0)));
+    c.push(reg.cvt64());
+    if (info.index_enable && !(index.IsImmediate() && index.U32() == 0)) {
+        if (!ComputeOffset(c, reg, pass_info, index)) {
+            c.add(rsp, 16);
+            return false;
+        }
+        c.mov(ecx, dword[rsp + 8]);
+        c.shr(ecx, 16);
+        c.and_(ecx, 0x3fff);
+        c.imul(reg, ecx);
+        c.add(reg, constant);
+    } else {
+        c.mov(reg, constant);
+    }
+    c.push(reg.cvt64());
+    if (!soffset.IsImmediate()) {
+        if (!ComputeOffset(c, reg, pass_info, soffset)) {
+            c.add(rsp, 24);
+            return false;
+        }
+        c.add(dword[rsp], reg);
+    }
+    if (info.voffset_enable && !(voffset.IsImmediate() && voffset.U32() == 0)) {
+        if (!ComputeOffset(c, reg, pass_info, voffset)) {
+            c.add(rsp, 24);
+            return false;
+        }
+        c.add(dword[rsp], reg);
+    }
+    // base = dword0 | (dword1 & 0xff) << 32; a null V# (base 0) reads as 0.
+    Xbyak::Label null_buffer, done;
+    const Xbyak::Reg64 reg64 = reg.cvt64();
+    c.mov(reg, dword[rsp + 8]);
+    c.movzx(ecx, byte[rsp + 16]);
+    c.shl(rcx, 32);
+    c.or_(reg64, rcx);
+    c.test(reg64, reg64);
+    c.jz(null_buffer);
+    c.mov(ecx, dword[rsp]);
+    c.add(reg64, rcx);
+    c.mov(reg, dword[reg64]);
+    c.jmp(done);
+    c.L(null_buffer);
+    c.xor_(reg, reg);
+    c.L(done);
+    c.add(rsp, 24);
+    return true;
 }
 
 static inline bool PushPtr(Xbyak::CodeGenerator& c, PassInfo& pass_info, const IR::Value& off_dw) {
