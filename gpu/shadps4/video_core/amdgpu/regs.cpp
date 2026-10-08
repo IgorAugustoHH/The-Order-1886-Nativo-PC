@@ -118,6 +118,7 @@ static_assert(GFX6_3D_REG_INDEX(vgt_gs_instance_cnt) == 0xA2E4);
 static_assert(GFX6_3D_REG_INDEX(vgt_strmout_config) == 0xA2E5);
 static_assert(GFX6_3D_REG_INDEX(vgt_strmout_buffer_config) == 0xA2E6);
 static_assert(GFX6_3D_REG_INDEX(aa_config) == 0xA2F8);
+static_assert(GFX6_3D_REG_INDEX(aa_sample_locs) == 0xA2FE);
 static_assert(GFX6_3D_REG_INDEX(color_buffers[0].base_address) == 0xA318);
 static_assert(GFX6_3D_REG_INDEX(color_buffers[0].pitch) == 0xA319);
 static_assert(GFX6_3D_REG_INDEX(color_buffers[0].slice) == 0xA31A);

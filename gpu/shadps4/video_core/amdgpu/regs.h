@@ -152,7 +152,11 @@ union Regs {
         StreamOutBufferConfig vgt_strmout_buffer_config;
         INSERT_PADDING_WORDS(17);
         AaConfig aa_config;
-        INSERT_PADDING_WORDS(31);
+        INSERT_PADDING_WORDS(5);
+        // bbport: PA_SC_AA_SAMPLE_LOCS_PIXEL_X{0,1}Y{0,1}_{0..3}: per-pixel MSAA sample positions
+        // (4-bit signed x/y pairs, 1/16 pixel), set by the game; not passed to Vulkan.
+        std::array<u32, 16> aa_sample_locs;
+        INSERT_PADDING_WORDS(10);
         ColorBuffer color_buffers[NUM_COLOR_BUFFERS];
         INSERT_PADDING_WORDS(7343);
         StreamOutControl cp_strmout_cntl;

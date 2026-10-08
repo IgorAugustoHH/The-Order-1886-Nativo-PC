@@ -3314,6 +3314,26 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         state.height = proxy.height;
         target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
     }
+    // bbport: MSAA sample positions the game sets (PA_SC_AA_SAMPLE_LOCS), not passed to Vulkan.
+    // The Order: 1886 resolves 2x MSAA with customresolve_cs_msaa4x_temporal: does it alternate
+    // the positions between frames? Logged when they change (the first 48 times).
+    if (const auto& r = Regs(); r.aa_config.NumSamples() > 1) {
+        // Per sample count: the last positions and the passes since the program started.
+        static std::array<std::array<u32, 16>, 5> last_locs{};
+        static std::array<int, 5> changes{};
+        static u64 passes = 0;
+        ++passes;
+        const u32 log2 = std::min<u32>(r.aa_config.msaa_num_samples, 4);
+        if (r.aa_sample_locs != last_locs[log2] && changes[log2] < 24) {
+            ++changes[log2];
+            last_locs[log2] = r.aa_sample_locs;
+            const auto& l = last_locs[log2];
+            std::printf("AA sample locs: pass %llu, %u samples: %08x %08x %08x %08x | %08x %08x "
+                        "%08x %08x\n",
+                        (unsigned long long)passes, r.aa_config.NumSamples(), l[0], l[1], l[2],
+                        l[3], l[4], l[5], l[6], l[7]);
+        }
+    }
     if (FrameCapture::Active()) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
