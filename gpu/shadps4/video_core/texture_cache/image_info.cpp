@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <cstdio>
 #include "common/assert.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/buffer.h"
@@ -80,6 +82,16 @@ ImageInfo::ImageInfo(const AmdGpu::ColorBuffer& buffer, AmdGpu::CbDbExtent hint)
         mips_layout[0] = MipInfo(guest_size, pitch, size.height, 0);
     }
     alt_tile = Libraries::Kernel::sceKernelIsNeoMode() && buffer.info.alt_tile_mode;
+    // bbport: diagnostics for layered render targets (The Order: 1886 makes 640x360 R32F
+    // targets with 73..222 layers, each a separate image of up to 200 MiB).
+    static std::atomic<int> layered_logged{0};
+    if (resources.layers > 8 && layered_logged.fetch_add(1) < 24) {
+        std::printf("Layered color target at %#llx: %ux%u pitch %u, slices %u..%u, %u bits, "
+                    "%u samples, guest size %.1f MiB\n",
+                    (unsigned long long)guest_address, size.width, size.height, pitch,
+                    u32(buffer.view.slice_start), u32(buffer.view.slice_max), num_bits,
+                    num_samples, double(guest_size) / (1024.0 * 1024.0));
+    }
 }
 
 ImageInfo::ImageInfo(const AmdGpu::DepthBuffer& buffer, u32 num_slices, VAddr htile_address,
