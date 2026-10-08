@@ -191,7 +191,7 @@ private:
         std::vector<WritebackItem> items;
     };
     bool WrittenAgain(VAddr addr, u64 size);
-    bool early_writeback = true;
+    bool early_writeback = false; ///< BB_EARLY_WRITEBACK=1 (no gain measured in run75)
     std::mutex frame_written_mutex;
     std::vector<std::pair<VAddr, u64>> frame_written; ///< written ranges since the last record
     std::recursive_mutex writeback_mutex;

@@ -97,8 +97,10 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             .value();
 
     backing_pool = std::make_unique<SparseBackingPool>(instance.GetAllocator());
-    if (const char* env = std::getenv("BB_EARLY_WRITEBACK"); env && env[0] == '0') {
-        early_writeback = false;
+    // bbport: off by default: in run75 the game wrote those pages in the same submission the
+    // shaders wrote them, before any early copy could arrive (no fewer Finish waits).
+    if (const char* env = std::getenv("BB_EARLY_WRITEBACK"); env && env[0] == '1') {
+        early_writeback = true;
     }
     std::printf("Buffer cache: pooled sparse backing (VMA), block %u KiB\n", block_size >> 10);
 
@@ -163,6 +165,7 @@ namespace {
 struct ReadbackStats {
     std::mutex mutex;
     u64 writes = 0, reads = 0, bytes = 0;
+    u64 on_gpu_bytes = 0, beside = 0; ///< CPU writes landing on GPU-written bytes or next to them
     std::unordered_map<u64, u32> regions;
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
 
@@ -190,9 +193,15 @@ struct ReadbackStats {
                     "busiest MiB:%s\n",
                     (unsigned long long)writes, (unsigned long long)reads,
                     double(bytes) / (1024.0 * 1024.0), text.c_str());
-        writes = reads = bytes = 0;
+        std::printf("Readbacks: CPU writes on GPU-written bytes %llu, only on the same page %llu\n",
+                    (unsigned long long)on_gpu_bytes, (unsigned long long)beside);
+        writes = reads = bytes = on_gpu_bytes = beside = 0;
         regions.clear();
         window = now;
+    }
+    void NoteOverlap(bool on_gpu) {
+        std::scoped_lock lock{mutex};
+        ++(on_gpu ? on_gpu_bytes : beside);
     }
     void NoteBytes(u64 n) {
         std::scoped_lock lock{mutex};
@@ -220,7 +229,10 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), arena->cpu_addr);
         const VAddr window_end = std::min<VAddr>(
             std::max<VAddr>(window_start + WindowSize, device_addr + size), arena_end);
-        // bbport: early write-backs usually already hold this data (see RecordWritebacks).
+        if (is_write) {
+            Readbacks().NoteOverlap(gpu_modified_ranges.Intersects(device_addr, size));
+        }
+        // bbport: early write-backs may already hold this data (see RecordWritebacks).
         ApplyWritebacks(window_start, window_end - window_start);
         DownloadMemory(arena, window_start, window_end - window_start);
         if (is_write) {
