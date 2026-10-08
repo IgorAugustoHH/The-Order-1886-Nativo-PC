@@ -4,6 +4,7 @@
 #include <chrono>
 #include <array>
 #include <map>
+#include <mutex>
 #include <unordered_map>
 #include <atomic>
 #include <vector>
@@ -151,7 +152,58 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
     memory_tracker->ExtendWriteFault(Common::AlignDown(device_addr, window), window);
 }
 
+namespace {
+// bbport: readbacks (GPU-modified memory the CPU touches) are a fifth of the GPU command
+// thread's time in The Order: 1886 (7735 Finish() waits, 38.6 s in run69). Every 5 s: how many
+// came from CPU writes and from CPU reads, the bytes copied back, and the busiest 1 MiB
+// regions, to tell guest reads of GPU results from rewrites of buffers the GPU wrote.
+struct ReadbackStats {
+    std::mutex mutex;
+    u64 writes = 0, reads = 0, bytes = 0;
+    std::unordered_map<u64, u32> regions;
+    std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
+
+    void Note(VAddr address, bool is_write) {
+        std::scoped_lock lock{mutex};
+        ++(is_write ? writes : reads);
+        ++regions[address >> 20];
+        const auto now = std::chrono::steady_clock::now();
+        if (now - window < std::chrono::seconds(5)) {
+            return;
+        }
+        std::vector<std::pair<u32, u64>> top;
+        for (const auto& [region, count] : regions) {
+            top.emplace_back(count, region);
+        }
+        std::ranges::sort(top, std::greater{});
+        std::string text;
+        for (size_t i = 0; i < top.size() && i < 6; ++i) {
+            char item[48];
+            std::snprintf(item, sizeof(item), " %#llx:%u", (unsigned long long)(top[i].second << 20),
+                          top[i].first);
+            text += item;
+        }
+        std::printf("Readbacks: %llu from CPU writes, %llu from CPU reads, %.1f MiB in 5 s; "
+                    "busiest MiB:%s\n",
+                    (unsigned long long)writes, (unsigned long long)reads,
+                    double(bytes) / (1024.0 * 1024.0), text.c_str());
+        writes = reads = bytes = 0;
+        regions.clear();
+        window = now;
+    }
+    void NoteBytes(u64 n) {
+        std::scoped_lock lock{mutex};
+        bytes += n;
+    }
+};
+ReadbackStats& Readbacks() {
+    static ReadbackStats stats;
+    return stats;
+}
+} // namespace
+
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
+    Readbacks().Note(device_addr, is_write);
     const auto flush_request = [this, device_addr, size, is_write] {
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
@@ -201,6 +253,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     if (total_size_bytes == 0) {
         return;
     }
+    Readbacks().NoteBytes(total_size_bytes);
     const auto download = staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached);
     for (auto& copy : copies) {
         copy.dstOffset += download.offset;
