@@ -6,6 +6,9 @@ RAIZ="/b/Projeto the order 1886"
 BB="$RAIZ/bbport-base"
 N=$(ls "$RAIZ"/work/run*.log 2>/dev/null | wc -l)
 LOG="$RAIZ/work/run$((N + 1)).log"
+# Esperas pela GPU (Scheduler::Wait/Finish) de 0,5 ms ou mais, com a origem no código
+# (bb_wait_trace.h, do auxiliador). Resumo: python analise/analisar_esperas.py work/esperas_runN.txt
+export BB_WAIT_TRACE="${BB_WAIT_TRACE:-1}" BB_WAIT_TRACE_FILE="B:/Projeto the order 1886/work/esperas_run$((N + 1)).txt"
 
 python "$BB/tools/gen_import_names.py" >/dev/null || exit 1
 if ! MSYSTEM=CLANG64 /b/msys64/usr/bin/bash.exe -lc "cd \"$BB\" && MSYS2_ROOT=/b/msys64 bash build.sh" >"$RAIZ/work/build.log" 2>&1; then

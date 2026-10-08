@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
+#include "video_core/renderer_vulkan/bb_wait_trace.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -325,29 +326,38 @@ void Scheduler::Flush() {
     Flush(info);
 }
 
-void Scheduler::Finish() {
+void Scheduler::Finish(std::source_location site) {
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitInfo info{};
     SubmitExecution(info);
-    Wait(presubmit_tick);
+    Wait(presubmit_tick, site);
 }
 
-void Scheduler::WaitSubmitted() {
+void Scheduler::WaitSubmitted(std::source_location site) {
     const u64 tick = CurrentTick();
     if (tick > 1) {
-        Wait(tick - 1);
+        Wait(tick - 1, site);
     }
 }
 
-void Scheduler::Wait(u64 tick) {
+void Scheduler::Wait(u64 tick, std::source_location site) {
+    const bool trace = BbWaitTrace::Enabled();
+    const auto start = trace ? BbWaitTrace::Clock::now() : BbWaitTrace::Clock::time_point{};
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
         Flush(info);
     }
-    BbStats::WaitTimer timer{BbStats::tick_wait_ns};
-    work_semaphore.Wait(tick);
+    const auto submitted = trace ? BbWaitTrace::Clock::now() : BbWaitTrace::Clock::time_point{};
+    {
+        BbStats::WaitTimer timer{BbStats::tick_wait_ns};
+        work_semaphore.Wait(tick);
+    }
+    if (trace) {
+        const auto end = BbWaitTrace::Clock::now();
+        BbWaitTrace::Record(this, tick, site, start, submitted, end);
+    }
 }
 
 void Scheduler::PopPendingOperations() {
