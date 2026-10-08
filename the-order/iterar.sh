@@ -38,6 +38,15 @@ export BB_VBLANK_HZ="${BB_VBLANK_HZ:-0}" BB_FPS_LIMIT="${BB_FPS_LIMIT:-30}"
 # Até corrigir o carregamento, não pré-carrega: compila na hora (mais travadas na 1ª visita).
 # BB_PIPELINE_CACHE=1 bash iterar.sh -> volta a pré-carregar.
 export BB_PIPELINE_CACHE="${BB_PIPELINE_CACHE:-0}"
+# Chaves de otimização ao vivo: o número em work/toggles.txt (lido a cada 0,25 s) desliga as
+# otimizações do BBPort cujos bits estiverem ligados (gpu/shim/bbport_toggles.h). 0 = todas ligadas.
+export BB_TOGGLE_FILE="${BB_TOGGLE_FILE:-B:/Projeto the order 1886/work/toggles.txt}"
+# Padrão do The Order: DeferredStreamCopies (16384) desligada. A cópia adiada das constantes
+# pequenas (até 16 KB) acontecia depois que o processador de comandos já tinha aplicado as
+# escritas de memória dos comandos seguintes: objetos, paredes e tetos piscavam com as
+# constantes de outro desenho (achado na run60, desligando as otimizações uma a uma).
+# BB_TOGGLES=0 bash iterar.sh -> todas ligadas.
+printf '%s' "${BB_TOGGLES:-16384}" > "B:/Projeto the order 1886/work/toggles.txt"
 # Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
 # Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
 export BB_DUMP_ONLY="${BB_DUMP_ONLY:-f5c17eec,8c8a4817,804aeead,a8792bbb}"
