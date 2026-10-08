@@ -122,8 +122,13 @@ void Print() {
             images += text;
         }
     }
-    std::printf("VRAM: host images:%s; pipelines %lld graphics, %lld compute;%s\n",
-                images.c_str(), (long long)graphics_pipelines.load(),
+    std::printf("VRAM: host images:%s; staging VRAM %.0f MiB (%llu large), upload %.0f MiB "
+                "(%llu large), readback %.0f MiB (%llu large); pipelines %lld graphics, "
+                "%lld compute;%s\n",
+                images.c_str(), MiB(int64_t(staging_bytes[0].load())),
+                (unsigned long long)staging_large[0].load(), MiB(int64_t(staging_bytes[1].load())),
+                (unsigned long long)staging_large[1].load(), MiB(int64_t(staging_bytes[2].load())),
+                (unsigned long long)staging_large[2].load(), (long long)graphics_pipelines.load(),
                 (long long)compute_pipelines.load(), heaps.c_str());
 }
 

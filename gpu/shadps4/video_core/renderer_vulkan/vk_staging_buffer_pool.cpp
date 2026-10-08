@@ -4,6 +4,7 @@
 #include "bbport_toggles.h"
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 
@@ -11,6 +12,7 @@
 #include "common/assert.h"
 #include "common/types.h"
 #include "core/devtools/widget/gpu_memory.h"
+#include "video_core/renderer_vulkan/bb_vram_report.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -27,6 +29,18 @@ namespace {
 // upload ring keeps BB_STAGING_KEEP_MB (512) and is populated at startup.
 constexpr u64 RING_IDLE_FRAMES = 3000;
 constexpr u64 LARGE_IDLE_FRAMES = 3000;
+// bbport: device-local and readback staging is not populated by the kernel, so the long idle
+// time above buys nothing there. The Order: 1886 detiles thousands of textures through
+// dedicated device-local staging sized like each texture; kept 3000 frames they held ~1.9 GB
+// of a 6 GB card. They go after 2 s idle, and only the upload ring keeps its reserve.
+// TickFrame runs on every submission, so this limit is in milliseconds.
+constexpr u64 DEVICE_IDLE_MS = 2000;
+
+u64 NowMs() {
+    return u64(std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+                   .count());
+}
 constexpr u64 PREWARM_BLOCKS = 8;
 constexpr u64 LARGE_MIN_GRANULARITY = 64_KB;
 constexpr u64 BLOCK_SIZE = 16_MB;
@@ -48,6 +62,7 @@ StagingBufferPool::StagingBufferPool(const Instance& instance_, Scheduler& sched
             .buffer = std::make_unique<VideoCore::StreamBuffer>(
                 instance, scheduler, MemoryType::HostUncached, BLOCK_SIZE),
             .last_used_frame = frame,
+            .last_used_ms = NowMs(),
         });
         if (!block.buffer->mapped_data.empty()) {
             std::memset(block.buffer->mapped_data.data(), 0, block.buffer->mapped_data.size());
@@ -86,6 +101,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
             .buffer =
                 std::make_unique<VideoCore::StreamBuffer>(instance, scheduler, type, BLOCK_SIZE),
             .last_used_frame = frame,
+            .last_used_ms = NowMs(),
         });
         ring.current = ring.blocks.size() - 1;
         best_offset = *best->buffer->Reserve(size, alignment, false);
@@ -93,6 +109,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
 
     auto& buffer = *best->buffer;
     best->last_used_frame = frame;
+    best->last_used_ms = NowMs();
 
     StagingBufferRef ref{
         .buffer = &buffer,
@@ -129,11 +146,13 @@ StagingBufferRef StagingBufferPool::RequestLarge(u64 size, MemoryType type, bool
             .tick = 0,
             .last_used_frame = frame,
             .held = false,
+            .last_used_ms = NowMs(),
         });
     }
 
     best->tick = scheduler.CurrentTick();
     best->last_used_frame = frame;
+    best->last_used_ms = NowMs();
     best->held = deferred;
 
     VideoCore::Buffer& buffer = *best->buffer;
@@ -157,24 +176,28 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
     it->held = false;
     it->tick = scheduler.CurrentTick();
     it->last_used_frame = frame;
+    it->last_used_ms = NowMs();
 }
 
 void StagingBufferPool::TickFrame() {
     ++frame;
-    for (Ring& ring : rings) {
-        TrimRing(ring);
-    }
-    for (auto& cache : large_caches) {
-        TrimLarge(cache);
+    for (size_t type = 0; type < NUM_TYPES; ++type) {
+        TrimRing(rings[type], MemoryType(type));
+        TrimLarge(large_caches[type], MemoryType(type));
     }
     PublishStats();
 }
 
-void StagingBufferPool::TrimRing(Ring& ring) {
+void StagingBufferPool::TrimRing(Ring& ring, MemoryType type) {
     auto& blocks = ring.blocks;
+    const bool host = type == MemoryType::HostUncached;
+    const u64 keep = host ? keep_blocks : 0;
+    const u64 now_ms = NowMs();
     for (size_t i = blocks.size(); i-- > 0;) {
         const Block& block = blocks[i];
-        if (blocks.size() <= keep_blocks || frame - block.last_used_frame < RING_IDLE_FRAMES ||
+        const bool idle = host ? frame - block.last_used_frame >= RING_IDLE_FRAMES
+                               : now_ms - block.last_used_ms >= DEVICE_IDLE_MS;
+        if (blocks.size() <= keep || !idle ||
             !scheduler.IsFree(block.buffer->LastTick())) {
             continue;
         }
@@ -190,15 +213,31 @@ void StagingBufferPool::TrimRing(Ring& ring) {
     }
 }
 
-void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
-    std::erase_if(cache, [this](const LargeBuffer& entry) {
-        return !entry.held && frame - entry.last_used_frame >= LARGE_IDLE_FRAMES &&
+void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache, MemoryType type) {
+    const bool host = type == MemoryType::HostUncached;
+    const u64 now_ms = NowMs();
+    std::erase_if(cache, [this, host, now_ms](const LargeBuffer& entry) {
+        const bool idle = host ? frame - entry.last_used_frame >= LARGE_IDLE_FRAMES
+                               : now_ms - entry.last_used_ms >= DEVICE_IDLE_MS;
+        return !entry.held && idle &&
                scheduler.IsFree(entry.tick);
     });
 }
 
 void StagingBufferPool::PublishStats() const {
     using namespace Core::Devtools::Widget;
+    // bbport: totals for the VRAM report (bb_vram_report).
+    for (size_t i = 0; i < NUM_TYPES; ++i) {
+        u64 bytes = 0;
+        for (const Block& block : rings[i].blocks) {
+            bytes += block.buffer->SizeBytes();
+        }
+        for (const LargeBuffer& entry : large_caches[i]) {
+            bytes += entry.buffer->SizeBytes();
+        }
+        BbVram::staging_bytes[i].store(bytes, std::memory_order_relaxed);
+        BbVram::staging_large[i].store(large_caches[i].size(), std::memory_order_relaxed);
+    }
     if (!GpuMemoryViewer::IsEnabled()) {
         return;
     }

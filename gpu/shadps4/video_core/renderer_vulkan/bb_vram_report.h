@@ -27,6 +27,10 @@ void NoteImage(VmaAllocator allocator, VmaAllocation allocation, int sign,
 inline std::atomic<int64_t> graphics_pipelines{0};
 inline std::atomic<int64_t> compute_pipelines{0};
 
+/// Staging pool totals per VideoCore::MemoryType (DeviceLocal, HostUncached, HostCached).
+inline std::atomic<uint64_t> staging_bytes[3]{};
+inline std::atomic<uint64_t> staging_large[3]{};
+
 /// One "VRAM:" line (called beside the frame statistics).
 void Print();
 

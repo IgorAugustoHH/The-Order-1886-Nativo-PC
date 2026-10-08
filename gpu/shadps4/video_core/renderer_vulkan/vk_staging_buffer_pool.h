@@ -53,6 +53,7 @@ private:
     struct Block {
         std::unique_ptr<VideoCore::StreamBuffer> buffer;
         u64 last_used_frame;
+        u64 last_used_ms{}; ///< bbport: device-local trimming is time based
     };
 
     struct Ring {
@@ -65,6 +66,7 @@ private:
         u64 tick;
         u64 last_used_frame;
         bool held;
+        u64 last_used_ms{};
     };
 
     static constexpr size_t NUM_TYPES = 3;
@@ -73,8 +75,8 @@ private:
                                      VideoCore::MemoryType type);
     StagingBufferRef RequestLarge(u64 size, VideoCore::MemoryType type, bool deferred);
 
-    void TrimRing(Ring& ring);
-    void TrimLarge(std::vector<LargeBuffer>& cache);
+    void TrimRing(Ring& ring, VideoCore::MemoryType type);
+    void TrimLarge(std::vector<LargeBuffer>& cache, VideoCore::MemoryType type);
 
     void PublishStats() const;
 
