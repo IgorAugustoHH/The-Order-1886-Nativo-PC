@@ -51,7 +51,9 @@ public:
         return value;
     }
     bool IsCopyGpuBuffers() { static const auto value = Flag("BB_COPY_GPU_BUFFERS", false); return value; }
-    bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", false); return value; }
+    // bbport: on by default since 2026-10-08: The Order: 1886 reads light data through ADDR64 buffer
+    // loads and loop-indexed tables, both served from guest memory (BB_DIRECT_MEMORY_ACCESS=0: off).
+    bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", true); return value; }
     bool IsDumpShaders() { static const auto value = Flag("BB_DUMP_SHADERS", false); return value; }
     bool IsFsrEnabled() { static const auto value = Flag("BB_FSR1", false); return value; }
     bool IsHdrAllowed() { static const auto value = Flag("BB_HDR", false); return value; }

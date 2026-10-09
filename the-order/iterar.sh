@@ -62,14 +62,6 @@ export BB_LIVE_DIR="${BB_LIVE_DIR:-B:/Projeto the order 1886/work/live}"
 mkdir -p "/b/Projeto the order 1886/work/capturas"; rm -f "/b/Projeto the order 1886/work/live/capturar_quadro.req"
 export BB_CAPTURE_TRIGGER="${BB_CAPTURE_TRIGGER:-B:/Projeto the order 1886/work/live/capturar_quadro.req}"
 export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas}"
-# Estudo do laço do SRT (temporário): grava o IR destes shaders em work/user/shader/dumps.
-# Material que já aparece no menu, vértice, compute e outro vértice com "loop index".
-# depthreduction (clear_xy, msaa2x_lag_xy, finalpass): as cascatas do sol saem minúsculas.
-# BB_RETRANSLATE ignora o cache deles para que sejam traduzidos (e gravados) de novo.
-export BB_DUMP_ONLY="${BB_DUMP_ONLY:-7550d841,c6941be0,7b1b18c9}"
-export BB_RETRANSLATE="${BB_RETRANSLATE:-$BB_DUMP_ONLY}"
-# O primeiro shader que lê o mapa do sol (0x1056030000): texturas e constantes vão para o log.
-export BB_FOCUS_IMAGE="${BB_FOCUS_IMAGE:-1056030000}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then

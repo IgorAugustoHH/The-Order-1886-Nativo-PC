@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/translate/translate.h"
 
 namespace Shader::Gcn {
@@ -209,6 +211,36 @@ void Translator::BUFFER_LOAD(u32 num_dwords, bool is_inst_typed, bool is_buffer_
     const auto& mubuf = inst.control.mubuf;
     const IR::VectorReg vaddr{inst.src[0].code};
     const IR::ScalarReg sharp{inst.src[2].code * 4};
+
+    static const bool addr64_loads = [] {
+        // bbport: on by default (BB_ADDR64_LOADS=0: off); fixed the missing sunlight.
+        const char* env = std::getenv("BB_ADDR64_LOADS");
+        return !(env && env[0] == '0');
+    }();
+    if (addr64_loads && mubuf.addr64 && !is_inst_typed && !is_buffer_typed &&
+        scalar_width == 32 && !mubuf.lds && !mubuf.tfe &&
+        EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+        // GCN ADDR64: base(T#) + VGPR[vaddr:vaddr+1] + SOFFSET + byte offset.
+        // NUM_RECORDS and stride do not bound this mode. A zero base is valid.
+        // Keep all arithmetic in 64 bits, including carry from the low dword.
+        const IR::U64 base = ir.PackUint2x32(ir.CompositeConstruct(
+            ir.GetScalarReg(sharp), ir.BitwiseAnd(ir.GetScalarReg(sharp + 1), ir.Imm32(0xff))));
+        const IR::U64 vector_address = ir.PackUint2x32(
+            ir.CompositeConstruct(ir.GetVectorReg(vaddr), ir.GetVectorReg(vaddr + 1)));
+        const IR::U64 scalar_offset = ir.UConvert(64, IR::U32{GetSrc(inst.src[3])});
+        const IR::U64 address = ir.IAdd(ir.IAdd(base, vector_address), scalar_offset);
+        std::array<IR::U32, 4> values;
+        for (u32 i = 0; i < num_dwords; ++i) {
+            values[i] = ir.ReadGuestU32(ir.IAdd(address, ir.Imm64(u64(mubuf.offset) + i * 4)));
+        }
+        const IR::VectorReg dst_reg{inst.src[1].code};
+        for (u32 i = 0; i < num_dwords; ++i) {
+            ir.SetVectorReg(dst_reg + i, values[i]);
+        }
+        LOG_INFO(Render_Recompiler, "ADDR64 load shader {:#x} pc {:#x}: {} dwords, vaddr {}, offset {}",
+                 info.pgm_hash, pc, num_dwords, inst.src[0].code, u32(mubuf.offset));
+        return;
+    }
 
     const IR::U32 index = mubuf.idxen ? ir.GetVectorReg(vaddr) : ir.Imm32(0);
     const IR::VectorReg voffset_vgpr = mubuf.idxen ? vaddr + 1 : vaddr;

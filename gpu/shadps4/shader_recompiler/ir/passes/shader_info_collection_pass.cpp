@@ -143,6 +143,10 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::Memtime:
         info.uses_shader_clock = true;
         break;
+    case IR::Opcode::ReadGuestU32:
+        info.readconst_types |= Info::ReadConstType::Dynamic;
+        info.uses_dma = true;
+        break;
     case IR::Opcode::ReadConst:
         if (!info.has_readconst) {
             info.buffers.push_back({

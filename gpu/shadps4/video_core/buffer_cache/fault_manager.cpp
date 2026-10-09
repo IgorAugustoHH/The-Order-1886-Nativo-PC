@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include "common/div_ceil.h"
+#include "video_core/buffer_cache/fault_buffer_limits.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -13,7 +17,7 @@
 
 namespace VideoCore {
 
-static constexpr size_t MaxPageFaults = 1024;
+static constexpr size_t MaxPageFaults = FaultDownloadSlots;
 static constexpr size_t PageFaultAreaSize = MaxPageFaults * sizeof(u64);
 
 FaultManager::FaultManager(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler_,
@@ -164,7 +168,9 @@ void FaultManager::ProcessFaultBuffer() {
     scheduler.DeferOperation([this, mapped, area = current_area] {
         fault_ranges.Clear();
         const u64* fault_buf = std::bit_cast<const u64*>(mapped);
-        const u32 fault_count = fault_buf[0];
+        const u64 reported = fault_buf[0];
+        const u32 fault_count = FaultDownloadCount(reported);
+        const auto begin = std::chrono::steady_clock::now();
         for (u32 i = 1; i <= fault_count; ++i) {
             fault_ranges.Add(fault_buf[i], sparse_pagesize);
             LOG_INFO(Render_Vulkan, "Accessed non-GPU cached memory at {:#x}", fault_buf[i]);
@@ -174,6 +180,31 @@ void FaultManager::ProcessFaultBuffer() {
                        "Buffer size is too large");
             (void)buffer_cache.ObtainBuffer(start, end - start, false);
         });
+        static const bool trace = [] {
+            const char* env = std::getenv("BB_DMA_TRACE");
+            return env && env[0] == '1';
+        }();
+        if (trace) {
+            static auto last = begin;
+            static u64 batches = 0, pages = 0, overflow_batches = 0;
+            static u64 max_reported = 0;
+            static double service_ms = 0;
+            ++batches;
+            pages += fault_count;
+            overflow_batches += reported > MaxPageFaults - 1;
+            max_reported = std::max(max_reported, reported);
+            const auto now = std::chrono::steady_clock::now();
+            service_ms += std::chrono::duration<double, std::milli>(now - begin).count();
+            if (now - last >= std::chrono::seconds(5)) {
+                std::fprintf(stderr, "DMA faults: %llu batches, %llu serviced pages, %llu overflow batches, max reported %llu, service %.2f ms\n",
+                    static_cast<unsigned long long>(batches), static_cast<unsigned long long>(pages),
+                    static_cast<unsigned long long>(overflow_batches),
+                    static_cast<unsigned long long>(max_reported), service_ms);
+                batches = pages = overflow_batches = max_reported = 0;
+                service_ms = 0;
+                last = now;
+            }
+        }
         fault_areas[area] = 0;
     });
 

@@ -1327,7 +1327,26 @@ std::string PipelineCache::GetShaderName(Shader::HwStage stage, u64 hash,
 
 void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage,
                                size_t perm_idx, std::string_view ext) {
-    if (!EmulatorSettings.IsDumpShaders()) {
+    // Match the IR dump filter so an investigation can retain original GCN and
+    // generated SPIR-V without dumping every shader in the game.
+    static const std::vector<u64> only = [] {
+        std::vector<u64> list;
+        if (const char* env = std::getenv("BB_DUMP_ONLY")) {
+            for (const char* p = env; *p;) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (end == p) {
+                    ++p;
+                    continue;
+                }
+                list.push_back(value);
+                p = end;
+            }
+        }
+        return list;
+    }();
+    if (!only.empty() ? std::ranges::find(only, hash) == only.end()
+                      : !EmulatorSettings.IsDumpShaders()) {
         return;
     }
 

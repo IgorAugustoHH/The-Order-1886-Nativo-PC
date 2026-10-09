@@ -28,6 +28,9 @@ void main() {
     while (word != 0u) {
         const uint store_index = atomicAdd(download_buffer32[0], 1u) + 1u;
         if (store_index >= MAX_PAGE_FAULTS) {
+            // The current bit and remaining bits were not downloaded. Keep
+            // them pending for the next submission rather than losing them.
+            atomicOr(fault_buffer[id], word);
             return;
         }
         const uint bit = findLSB(word);

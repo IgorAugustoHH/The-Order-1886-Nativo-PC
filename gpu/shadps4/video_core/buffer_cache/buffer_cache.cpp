@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdio>
 #include <array>
 #include <map>
 #include <mutex>
@@ -797,11 +798,58 @@ void BufferCache::ProcessFaultBuffer() {
 }
 
 void BufferCache::SynchronizeDmaBuffers() {
+    static const bool skip_clean = [] {
+        // bbport: on by default (BB_DMA_CLEAN_SKIP=0: off).
+        const char* env = std::getenv("BB_DMA_CLEAN_SKIP");
+        return !(env && env[0] == '0');
+    }();
+    static const bool trace = [] {
+        const char* env = std::getenv("BB_DMA_TRACE");
+        return env && env[0] == '1';
+    }();
+    const auto begin = trace ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+    u64 visited_ranges = 0, visited_bytes = 0, clean_ranges = 0;
     for (const auto& range : resident_ranges) {
         const u64 page = range.start >> (arena_page_bits - block_shift);
         const VAddr device_addr = range.start << block_shift;
         const u64 size = (range.end - range.start) << block_shift;
-        SynchronizeMemory(address_space[page], device_addr, size, false, false);
+        // Same read-only dirty predicate already used inside ForEachUploadRange.
+        // Avoid constructing the upload machinery for an entirely clean range.
+        // Do not cache this result across draws: CPU writes must remain visible.
+        const bool clean = skip_clean &&
+            !BbToggle::Disabled(BbToggle::LockFreeUploadCheck) &&
+            !memory_tracker->IsRegionCpuModified(device_addr, size);
+        if (!clean) {
+            SynchronizeMemory(address_space[page], device_addr, size, false, false);
+        }
+        if (trace) {
+            clean_ranges += clean;
+            ++visited_ranges;
+            visited_bytes += size;
+        }
+    }
+    if (trace) {
+        static auto last = begin;
+        static u64 calls = 0, ranges = 0, bytes = 0, skipped = 0;
+        static double time_ms = 0;
+        const auto now = std::chrono::steady_clock::now();
+        ++calls;
+        ranges += visited_ranges;
+        bytes += visited_bytes;
+        skipped += clean_ranges;
+        time_ms += std::chrono::duration<double, std::milli>(now - begin).count();
+        if (now - last >= std::chrono::seconds(5)) {
+            std::fprintf(stderr, "DMA sync: %llu calls, %llu range visits, %.1f MiB examined (not uploaded), %.2f ms CPU\n",
+                static_cast<unsigned long long>(calls), static_cast<unsigned long long>(ranges),
+                double(bytes) / 1048576.0, time_ms);
+            std::fprintf(stderr, "DMA clean skip: %llu of %llu range visits\n",
+                static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(ranges));
+            calls = ranges = bytes = 0;
+            time_ms = 0;
+            skipped = 0;
+            last = now;
+        }
     }
 }
 

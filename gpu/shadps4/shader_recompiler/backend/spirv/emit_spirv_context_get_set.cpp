@@ -80,6 +80,14 @@ Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
     return result;
 }
 
+Id EmitReadGuestU32(EmitContext& ctx, Id address) {
+    // Reuse the guest-page translation and missing-page fallback. This address
+    // is per lane and must not be flattened into a draw-time descriptor.
+    ASSERT(EmulatorSettings.IsDirectMemoryAccessEnabled());
+    return ctx.OpFunctionCall(ctx.U32[1], ctx.read_const_dynamic,
+                              ctx.OpBitcast(ctx.U32[2], address), ctx.u32_zero_value);
+}
+
 Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, u32 comp, u32 index) {
     if (IR::IsParam(attr)) {
         const u32 param_index{u32(attr) - u32(IR::Attribute::Param0)};
