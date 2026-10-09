@@ -69,3 +69,13 @@ vamos implementando uma a uma.
 - PRÓXIMO: run33 caiu com buffer de 3 GB DeviceLocal (ErrorOutOfDeviceMemory) logo após rastrear uma
   região de 3 GB. Origem provável: arena do buffer cache (`BufferCache::GetArena`, buffer_cache.cpp:418)
   ou região mapeada enorme. Limitar/espalhar a arena para caber na VRAM de 6 GB.
+
+## Estado em 2026-10-09: versão de referência "60 FPS"
+- Jogável sem crash (~40 min testados em run114/run115). Launcher de referência: `JOGAR_60FPS.bat`.
+  Tag local `versao-60fps-2026-10-09` na branch `the-order` (não enviada ao GitHub).
+- Luz do sol e sombras corretas: correção ADDR64 do auxiliador integrada (`61d3565`), acesso direto à
+  memória ligado por padrão; custo de CPU reduzido com o contador de escritas (`7aad56e`).
+- Medido: cache vazio, mediana 67 FPS (p10 43) com travadas nas compilações; cache quente, mediana 90.
+- Pendências (pontos pretos no rosto, personagens escuros na cela, vértices explodidos, partículas
+  brancas, fumaça, compilação de shaders mais rápida): lista completa e pistas em
+  `auxiliador/PASSAGEM_PARA_AUXILIADOR.md`. Depois: versão 1.0 no GitHub, com o ok do Igor.
