@@ -62,6 +62,8 @@ export BB_LIVE_DIR="${BB_LIVE_DIR:-B:/Projeto the order 1886/work/live}"
 mkdir -p "/b/Projeto the order 1886/work/capturas"; rm -f "/b/Projeto the order 1886/work/live/capturar_quadro.req"
 export BB_CAPTURE_TRIGGER="${BB_CAPTURE_TRIGGER:-B:/Projeto the order 1886/work/live/capturar_quadro.req}"
 export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas}"
+# Contadores do acesso direto à memória a cada 5 s no log ("DMA sync", "DMA faults").
+export BB_DMA_TRACE="${BB_DMA_TRACE:-1}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then

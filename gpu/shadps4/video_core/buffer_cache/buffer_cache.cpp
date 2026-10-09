@@ -807,10 +807,24 @@ void BufferCache::SynchronizeDmaBuffers() {
         const char* env = std::getenv("BB_DMA_TRACE");
         return env && env[0] == '1';
     }();
+    // bbport: the walk below only uploads CPU-modified pages and leaves none behind, so
+    // while no page became CPU-modified (and no range became resident) since the last full
+    // walk it would find nothing. ~600 shaders use DMA: this runs for most draws, and the
+    // walk visits every resident range (BB_DMA_SYNC_GENERATION=0: always walk).
+    static const bool skip_unchanged = [] {
+        const char* env = std::getenv("BB_DMA_SYNC_GENERATION");
+        return !(env && env[0] == '0');
+    }();
     const auto begin = trace ? std::chrono::steady_clock::now()
                              : std::chrono::steady_clock::time_point{};
+    // Read before the walk: a page marked during it bumps the generation again.
+    const u64 generation = cpu_modified_generation.load(std::memory_order_acquire);
+    const bool unchanged = skip_clean && skip_unchanged && generation == dma_synced_generation;
     u64 visited_ranges = 0, visited_bytes = 0, clean_ranges = 0;
     for (const auto& range : resident_ranges) {
+        if (unchanged) {
+            break;
+        }
         const u64 page = range.start >> (arena_page_bits - block_shift);
         const VAddr device_addr = range.start << block_shift;
         const u64 size = (range.end - range.start) << block_shift;
@@ -829,12 +843,14 @@ void BufferCache::SynchronizeDmaBuffers() {
             visited_bytes += size;
         }
     }
+    dma_synced_generation = generation;
     if (trace) {
         static auto last = begin;
-        static u64 calls = 0, ranges = 0, bytes = 0, skipped = 0;
+        static u64 calls = 0, ranges = 0, bytes = 0, skipped = 0, unchanged_calls = 0;
         static double time_ms = 0;
         const auto now = std::chrono::steady_clock::now();
         ++calls;
+        unchanged_calls += unchanged;
         ranges += visited_ranges;
         bytes += visited_bytes;
         skipped += clean_ranges;
@@ -843,9 +859,10 @@ void BufferCache::SynchronizeDmaBuffers() {
             std::fprintf(stderr, "DMA sync: %llu calls, %llu range visits, %.1f MiB examined (not uploaded), %.2f ms CPU\n",
                 static_cast<unsigned long long>(calls), static_cast<unsigned long long>(ranges),
                 double(bytes) / 1048576.0, time_ms);
-            std::fprintf(stderr, "DMA clean skip: %llu of %llu range visits\n",
-                static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(ranges));
-            calls = ranges = bytes = 0;
+            std::fprintf(stderr, "DMA clean skip: %llu of %llu range visits; %llu calls without new CPU writes\n",
+                static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(ranges),
+                static_cast<unsigned long long>(unchanged_calls));
+            calls = ranges = bytes = unchanged_calls = 0;
             time_ms = 0;
             skipped = 0;
             last = now;
@@ -976,6 +993,7 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         backing.offset = memory_offset;
         backing.block_shift = block_shift;
         resident_ranges.Add(backing);
+        BumpCpuModifiedGeneration(); // the next DMA sync walks the new range
 
         LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
 

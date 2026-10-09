@@ -259,6 +259,7 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+    u64 dma_synced_generation = ~0ull; ///< cpu_modified_generation at the last full DMA walk
 
     u32 arena_memory_type_index{};
     u32 block_size{};

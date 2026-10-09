@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 
@@ -30,6 +31,14 @@ using LockType = Common::AdaptiveMutex;
 using LockType = Common::SpinLock;
 #endif
 
+/// bbport: bumped (release) after any page becomes CPU-modified, so a walk over many ranges
+/// can be skipped while nothing new was written (BufferCache::SynchronizeDmaBuffers).
+inline std::atomic<u64> cpu_modified_generation{0};
+
+inline void BumpCpuModifiedGeneration() {
+    cpu_modified_generation.fetch_add(1, std::memory_order_release);
+}
+
 /**
  * Allows tracking CPU and GPU modification of pages in a contigious 16MB virtual address region.
  * Information is stored in bitsets for spacial locality and fast update of single pages.
@@ -47,6 +56,7 @@ public:
 
     void SetCpuAddress(VAddr new_cpu_addr) {
         cpu_addr = new_cpu_addr;
+        BumpCpuModifiedGeneration(); // a new region starts all CPU-modified
     }
 
     VAddr GetCpuAddr() const {
@@ -98,6 +108,9 @@ public:
         }
         if constexpr (enable) {
             bits.SetRange(start_page, end_page);
+            if constexpr (type == Type::CPU) {
+                BumpCpuModifiedGeneration();
+            }
         } else {
             bits.UnsetRange(start_page, end_page);
         }
@@ -123,6 +136,7 @@ public:
             return;
         }
         cpu |= add;
+        BumpCpuModifiedGeneration();
         UpdateProtection<false, false>();
     }
 
@@ -275,6 +289,7 @@ private:
             return;
         }
         cpu |= RegionBits(hot, start_page, end_page);
+        BumpCpuModifiedGeneration();
     }
 
     std::array<u8, NUM_PAGES_PER_REGION> write_faults{};
