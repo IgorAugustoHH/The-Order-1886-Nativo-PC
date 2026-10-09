@@ -40,6 +40,8 @@ namespace Vulkan {
 //   counted; the list goes to captured_shaders.txt (hash, stage, draws, first color target).
 // - dump_images.req: hex guest addresses of images (from a frame capture); at the end of the
 //   next submission each is saved as img_<address>.bin (TextureCache::DumpImage).
+// - clear_images.req: lines "hexaddress r g b a"; at the end of the next submission each
+//   image is cleared to that colour, every layer and level (diagnostics with skip_shaders).
 namespace {
 struct LiveShaderTools {
     struct Entry {
@@ -55,6 +57,11 @@ struct LiveShaderTools {
     std::filesystem::path base;
     std::atomic<bool> dump_pending{false};
     std::vector<u64> dump_requests; ///< guarded by mutex
+    struct ClearRequest {
+        u64 address;
+        std::array<float, 4> color;
+    };
+    std::vector<ClearRequest> clear_requests; ///< guarded by mutex
 
     static std::vector<u64> Parse(const std::string& text) {
         std::vector<u64> list;
@@ -116,6 +123,21 @@ struct LiveShaderTools {
                     std::filesystem::remove(base / "dump_images.req", ec);
                     std::scoped_lock lock{mutex};
                     dump_requests = Parse(request);
+                    dump_pending.store(true, std::memory_order_release);
+                }
+                if (std::FILE* f = std::fopen((base / "clear_images.req").string().c_str(), "rb")) {
+                    std::vector<ClearRequest> requests;
+                    unsigned long long address;
+                    ClearRequest r{};
+                    while (std::fscanf(f, "%llx %f %f %f %f", &address, &r.color[0], &r.color[1],
+                                       &r.color[2], &r.color[3]) == 5) {
+                        r.address = address;
+                        requests.push_back(r);
+                    }
+                    std::fclose(f);
+                    std::filesystem::remove(base / "clear_images.req", ec);
+                    std::scoped_lock lock{mutex};
+                    clear_requests = std::move(requests);
                     dump_pending.store(true, std::memory_order_release);
                 }
                 if (std::filesystem::remove(base / "capture_shaders.req", ec)) {
@@ -1183,9 +1205,39 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     DrawRecord(pipeline, used_prepared, is_indexed, index_offset);
 }
 
+/// bbport: BB_FOCUS_SHADER (hex program hash): log that program's bindings and constants.
+/// BB_FOCUS_IMAGE (hex guest address): the first program binding that image becomes the focus.
+static std::atomic<u64> g_focus_shader{[] {
+    const char* env = std::getenv("BB_FOCUS_SHADER");
+    return env ? std::strtoull(env, nullptr, 16) : 0ull;
+}()};
+static u64 FocusShader() {
+    return g_focus_shader.load(std::memory_order_relaxed);
+}
+static VAddr FocusImage() {
+    static const VAddr image = [] {
+        const char* env = std::getenv("BB_FOCUS_IMAGE");
+        return env ? VAddr(std::strtoull(env, nullptr, 16)) : VAddr(0);
+    }();
+    return image;
+}
+
+// bbport: diagnostic toggle (BbToggle::SkipSunShadowDraws): the sun shadow cascades of The
+// Order: 1886 are depth-only 4x MSAA 1024x1024 passes; without their draws every cascade stays
+// at the clear depth, so shading sees no sun shadow anywhere.
+static bool SkippedSunShadowDraw(const GraphicsPipeline* pipeline, const AmdGpu::Regs& regs) {
+    if (!BbToggle::Disabled(BbToggle::SkipSunShadowDraws)) {
+        return false;
+    }
+    // Depth only: no pixel shader, or one writing no colour (alpha-tested shadow casters).
+    const auto* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    return regs.depth_buffer.DepthValid() && regs.depth_buffer.NumSamples() == 4 &&
+           regs.depth_buffer.Pitch() == 1024 && (!fs || fs->mrt_mask == 0);
+}
+
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
-    if (SkippedShader(pipeline, &Regs())) {
+    if (SkippedShader(pipeline, &Regs()) || SkippedSunShadowDraw(pipeline, Regs())) {
         return;
     }
     if (DrawPipe::OnStageB()) {
@@ -1368,6 +1420,20 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
+        // bbport: BB_FOCUS_SHADER: the pixel stage's flattened user data, first draw only.
+        if (ps && FocusShader() && ps->pgm_hash == FocusShader()) {
+            static bool logged = false;
+            if (!std::exchange(logged, true)) {
+                const auto flat = ps->FlatUserData();
+                std::string text;
+                for (size_t i = 0; i < flat.size(); ++i) {
+                    text += fmt::format("{}[{}] {:g}", i % 8 ? " " : "\n  ", i,
+                                        std::bit_cast<float>(flat[i]));
+                }
+                std::printf("Focus: shader %llx flat user data (%zu dwords):%s\n",
+                            (unsigned long long)ps->pgm_hash, flat.size(), text.c_str());
+            }
+        }
         // bbport: the vertex stage's flattened user data as this draw read it (slot 99):
         // constants the walker copied from guest memory (sun shadow matrices).
         if (const auto flat = vs_info.FlatUserData(); !flat.empty()) {
@@ -1423,7 +1489,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
 void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_indexed,
                                     const IndirectDraw& indirect) {
-    if (SkippedShader(pipeline, &Regs())) {
+    if (SkippedShader(pipeline, &Regs()) || SkippedSunShadowDraw(pipeline, Regs())) {
         return;
     }
     if (DrawPipe::OnStageB()) {
@@ -1666,10 +1732,15 @@ void Rasterizer::OnSubmit() {
     // bbport: images asked for in BB_LIVE_DIR/dump_images.req (frame analysis).
     if (auto& tools = LiveTools(); tools.dump_pending.load(std::memory_order_acquire)) {
         std::vector<u64> addresses;
+        std::vector<LiveShaderTools::ClearRequest> clears;
         {
             std::scoped_lock lock{tools.mutex};
             addresses.swap(tools.dump_requests);
+            clears.swap(tools.clear_requests);
             tools.dump_pending.store(false);
+        }
+        for (const auto& clear : clears) {
+            texture_cache.ClearImageAt(clear.address, clear.color);
         }
         for (const u64 address : addresses) {
             texture_cache.DumpImage(
@@ -2740,6 +2811,27 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             if (FrameCapture::Active()) {
                 FrameCapture::Sampled(image.info, is_storage, desc.view_info.range.base.layer,
                                       desc.view_info.range.extent.layers);
+            }
+            // bbport: BB_FOCUS_SHADER=hash: what each image binding of that program is, once.
+            if (FocusImage() && image.info.guest_address == FocusImage() && !FocusShader()) {
+                g_focus_shader.store(stage.pgm_hash, std::memory_order_relaxed);
+                std::printf("Focus: shader %llx (%s) binds %#llx as image %u\n",
+                            (unsigned long long)stage.pgm_hash,
+                            std::string(magic_enum::enum_name(stage.sw_stage)).c_str(),
+                            (unsigned long long)FocusImage(), binding_index);
+            }
+            if (FocusShader() && stage.pgm_hash == FocusShader()) {
+                static std::set<u32> logged;
+                if (logged.insert(binding_index).second) {
+                    std::printf("Focus: shader %llx image %u -> %#llx %s %ux%u, %u layers "
+                                "(view %u+%u), %u samples\n",
+                                (unsigned long long)stage.pgm_hash, binding_index,
+                                (unsigned long long)image.info.guest_address,
+                                vk::to_string(image.info.pixel_format).c_str(),
+                                image.info.size.width, image.info.size.height,
+                                image.info.resources.layers, desc.view_info.range.base.layer,
+                                desc.view_info.range.extent.layers, image.info.num_samples);
+                }
             }
 
             vk::ImageView view = *image_view.image_view;

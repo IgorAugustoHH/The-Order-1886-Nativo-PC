@@ -120,6 +120,8 @@ public:
     /// (a one-line text header, then the texels as the GPU holds them). Waits for the GPU.
     void DumpImage(VAddr address, const std::string& path);
     void DumpMsaaDepth(Image& image, const std::string& path);
+    /// bbport: diagnostics: clears every layer and level of the colour image at `address`.
+    void ClearImageAt(VAddr address, const std::array<float, 4>& color);
 
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);

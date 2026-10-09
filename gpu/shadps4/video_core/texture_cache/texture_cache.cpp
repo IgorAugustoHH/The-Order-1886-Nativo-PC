@@ -140,6 +140,23 @@ void TextureCache::DumpImage(VAddr address, const std::string& path) {
     }
 }
 
+void TextureCache::ClearImageAt(VAddr address, const std::array<float, 4>& color) {
+    bool cleared = false;
+    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
+        if (image.info.guest_address != address || image.info.props.is_depth) {
+            return;
+        }
+        SubresourceRange range{};
+        range.extent.levels = image.info.resources.levels;
+        range.extent.layers = image.info.resources.layers;
+        runtime.ClearImage(&image, range,
+                           vk::ClearValue{.color = vk::ClearColorValue{color}});
+        cleared = true;
+    });
+    std::printf("Image clear: %#llx %s (%g %g %g %g)\n", (unsigned long long)address,
+                cleared ? "cleared" : "no colour image", color[0], color[1], color[2], color[3]);
+}
+
 /// Sample 0 of every pixel of a multisampled depth image (copies cannot read multisampled
 /// images; a depth resolve in an empty render pass can), saved like DumpImage.
 void TextureCache::DumpMsaaDepth(Image& image, const std::string& path) {

@@ -68,6 +68,8 @@ export BB_CAPTURE_DIR="${BB_CAPTURE_DIR:-B:/Projeto the order 1886/work/capturas
 # BB_RETRANSLATE ignora o cache deles para que sejam traduzidos (e gravados) de novo.
 export BB_DUMP_ONLY="${BB_DUMP_ONLY:-7550d841,c6941be0,7b1b18c9}"
 export BB_RETRANSLATE="${BB_RETRANSLATE:-$BB_DUMP_ONLY}"
+# O primeiro shader que lê o mapa do sol (0x1056030000): texturas e constantes vão para o log.
+export BB_FOCUS_IMAGE="${BB_FOCUS_IMAGE:-1056030000}"
 # Modo validação (bem mais lento): as camadas de validação da Khronos conferem cada chamada Vulkan e
 # gravam os erros em work/validacao.txt. BB_VALIDACAO=1 bash iterar.sh
 if [ -n "${BB_VALIDACAO:-}" ]; then
