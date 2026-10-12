@@ -228,6 +228,10 @@ add_executable(sparse-backing-test EXCLUDE_FROM_ALL ../tests/test_sparse_backing
 target_include_directories(sparse-backing-test PRIVATE shadps4 ${VMA_INCLUDE_DIRS})
 target_compile_options(sparse-backing-test PRIVATE -UNDEBUG)
 target_link_libraries(sparse-backing-test PRIVATE Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator)
+add_executable(command-buffer-test EXCLUDE_FROM_ALL ../tests/test_command_buffers.cpp)
+target_compile_options(command-buffer-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(command-buffer-test PRIVATE ..)
+
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(motion-history-test PRIVATE ..)
