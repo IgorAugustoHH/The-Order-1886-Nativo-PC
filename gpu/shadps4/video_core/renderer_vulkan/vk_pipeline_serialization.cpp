@@ -21,7 +21,7 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 8u; // bbport: ADDR64 loads, memory reads, float atomics
+static constexpr u32 ShaderBinaryVersion = 9u; // bbport: + upstream #5348 indirect ids
 static constexpr u32 ShaderMetaVersion = 12u; // bbport: stored by content key
 static constexpr u32 PipelineKeyVersion = 6u; // bbport: stage hashes are content keys
 } // namespace Serialization
