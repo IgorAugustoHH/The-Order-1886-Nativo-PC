@@ -3279,7 +3279,12 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         scene_targets->debug = scene_debug_frame;
         if (scene_debug_frame) std::printf("Scene debug: The Order reduced scene opened\n");
     }
-    bool reduced = order_dlss->SceneOpen() ||
+    // A pass without attachments has nothing to shrink: The Order rasterizes its light volumes
+    // into a one-pixel-per-tile grid this way (marking the lights of each 16x16 screen tile in
+    // GDS); scaling that viewport by 2/3 skipped every third tile row (rows of missing lights,
+    // black horizontal bands in the lit scene).
+    const bool has_attachments = key.mrt_mask != 0 || db_desc.first;
+    bool reduced = (order_dlss->SceneOpen() && has_attachments) ||
                    (scene_started && upscaler->RasterScaling() && key.num_samples == 1);
     // BB_SCENE_DEBUG=<file>: once the file exists, why the passes of one frame keep the
     // native size (see NoteFrameStart).
