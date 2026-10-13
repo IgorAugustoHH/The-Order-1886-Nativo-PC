@@ -601,8 +601,11 @@ void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header,
         break;
     }
     case PM4ItOpcode::IndexBufferSize:
-        regs.num_indices = reinterpret_cast<const PM4CmdDrawIndexBufferSize*>(header)->num_indices;
-        mark_field(regs.num_indices);
+        // upstream #5278: the size of the index buffer (VGT_DMA_MAX_SIZE), which indirect
+        // draws read; num_indices stays the last direct draw's count.
+        regs.max_index_size =
+            reinterpret_cast<const PM4CmdDrawIndexBufferSize*>(header)->num_indices;
+        mark_field(regs.max_index_size);
         break;
     case PM4ItOpcode::EventWrite: {
         const auto* event = reinterpret_cast<const PM4CmdEventWrite*>(header);

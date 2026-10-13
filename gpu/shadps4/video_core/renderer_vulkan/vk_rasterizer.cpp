@@ -1518,7 +1518,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
-        BindIndexBuffer();
+        BindIndexBuffer(0, true);
     }
 
     const auto [buffer, base] =
@@ -2183,8 +2183,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     v.num_buffers = static_cast<u32>(guest_buffers.size());
 }
 
-void Rasterizer::BindIndexBuffer(u32 index_offset) {
-    ResolveIndexBuffer(index_offset);
+void Rasterizer::BindIndexBuffer(u32 index_offset, bool is_indirect) {
+    ResolveIndexBuffer(index_offset, is_indirect);
     EmitIndexBuffer();
 }
 
@@ -2195,7 +2195,7 @@ void Rasterizer::EmitIndexBuffer() {
     });
 }
 
-void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
+void Rasterizer::ResolveIndexBuffer(u32 index_offset, bool is_indirect) {
     const auto& regs = Regs();
 
     // Figure out index type and size.
@@ -2203,10 +2203,20 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const vk::IndexType index_type = is_index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32;
     const u32 index_size = is_index16 ? sizeof(u16) : sizeof(u32);
     const VAddr index_address =
-        regs.index_base_address.Address<VAddr>() + index_offset * index_size;
+        regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
 
-    // Bind index buffer.
-    const u32 index_buffer_size = regs.num_indices * index_size;
+    // Bind index buffer. upstream #5278: an indirect draw reads indices anywhere in the buffer
+    // the INDEX_BUFFER_SIZE packet declared (max_index_size), not just the last direct draw's
+    // index count, which left later indices outside the bound range (exploded geometry).
+    const u32 max_indices = regs.max_index_size;
+    const u32 num_indices = is_indirect ? (max_indices ? max_indices : regs.num_indices)
+                                        : (max_indices ? std::min(regs.num_indices, max_indices)
+                                                       : regs.num_indices);
+    u32 index_buffer_size = static_cast<u32>(Common::AlignDown(
+        memory->ClampRangeSize(index_address, u64(num_indices) * index_size), index_size));
+    if (index_buffer_size == 0) {
+        index_buffer_size = index_size; // unmapped or empty: bind something valid
+    }
     const auto [buffer, offset] =
         buffer_cache.ObtainBuffer(index_address, index_buffer_size, false);
     needs_barrier |= runtime.IsBufferAccessed(buffer, offset, index_buffer_size);

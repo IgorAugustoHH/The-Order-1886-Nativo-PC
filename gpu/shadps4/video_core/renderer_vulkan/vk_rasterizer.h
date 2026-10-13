@@ -297,12 +297,12 @@ private:
     void MarkPass(const GraphicsPipeline* pipeline, const RenderState& state);
     void BindVertexBuffers(const GraphicsPipeline* pipeline,
                            const PreparedDraw* prepared = nullptr);
-    void BindIndexBuffer(u32 index_offset = 0);
+    void BindIndexBuffer(u32 index_offset = 0, bool is_indirect = false);
     /// bbport: BindVertexBuffers/BindIndexBuffer in two halves: obtaining the buffers
     /// (vertex_binds, index_bind) and recording the binds.
     void ResolveVertexBuffers(const GraphicsPipeline* pipeline, const PreparedDraw* prepared);
     void EmitVertexBuffers();
-    void ResolveIndexBuffer(u32 index_offset);
+    void ResolveIndexBuffer(u32 index_offset, bool is_indirect = false);
     void EmitIndexBuffer();
 
     void ResetBindings(bool is_compute);
