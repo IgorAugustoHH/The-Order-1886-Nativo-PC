@@ -699,7 +699,19 @@ int main(int argc, char **argv) {
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
-    struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
+    /* BB_GAME_ARGS: space-separated arguments for the game's main (The Order reads -use1080p,
+       -use4K, -use720p and -msaa; without them it renders 1280x720). */
+    struct { uint64_t argc; const char *argv[17]; } params = {1, {"/app0/eboot.bin", NULL}};
+    static char game_args[512];
+    if (getenv("BB_GAME_ARGS")) {
+        snprintf(game_args, sizeof game_args, "%s", getenv("BB_GAME_ARGS"));
+        for (char *arg = strtok(game_args, " "); arg && params.argc < 16; arg = strtok(NULL, " "))
+            params.argv[params.argc++] = arg;
+        params.argv[params.argc] = NULL;
+        printf("Game arguments:");
+        for (uint64_t i = 1; i < params.argc; ++i) printf(" %s", params.argv[i]);
+        printf("\n");
+    }
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);

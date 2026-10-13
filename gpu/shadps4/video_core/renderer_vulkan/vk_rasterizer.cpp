@@ -245,6 +245,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
+    order_dlss = std::make_unique<OrderDlss>(instance, scheduler, texture_cache, runtime);
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
     }
@@ -536,6 +537,9 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     }
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
+    }
+    if (order_dlss->Enabled() && cb_descs[0].first) {
+        order_dlss->OnTargets(cb_descs[0].first, db_desc.first);
     }
     // bbport: scene color: a full-size RGBA16F target drawn with the scene depth.
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth() &&
@@ -1677,6 +1681,14 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
 
     if (needs_barrier) {
         runtime.FlushBarriers();
+    }
+
+    // bbport (The Order): DLSS in place of the temporal MSAA resolve (docs/order_dlss.md).
+    if (order_dlss->Enabled() && OrderDlss::IsResolve(cs.pgm_hash) &&
+        order_dlss->Replace(bound_images, cs.FlatUserData())) {
+        ResetBindings(true);
+        scheduler.KickRecording();
+        return;
     }
 
     scheduler.EndRendering();

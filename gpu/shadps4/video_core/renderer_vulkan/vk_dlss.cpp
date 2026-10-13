@@ -199,6 +199,18 @@ bool Dlss::HasFeature(const FeatureDesc& desc) const {
     return impl->feature && *impl->feature == desc;
 }
 
+namespace {
+/// BB_DLSS_PRESET: NGX render preset (0 driver default). Default 11 = K, the DLSS 4 transformer
+/// (1st gen), lighter than the 4.5 presets (L/M) on RTX 20; 10 = J; 6 = F (CNN).
+u32 Preset() {
+    static const u32 value = [] {
+        const char* env = std::getenv("BB_DLSS_PRESET");
+        return env && env[0] ? u32(std::strtoul(env, nullptr, 10)) : 11u;
+    }();
+    return value;
+}
+} // namespace
+
 bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
     if (!impl->available) {
         return false;
@@ -206,7 +218,7 @@ bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
     impl->feature.reset();
     const BbDlssFeature feature{desc.input_width,  desc.input_height, desc.output_width,
                                 desc.output_height, desc.quality,      0,
-                                0,                  desc.hdr ? 1 : 0};
+                                Preset(),           desc.hdr ? 1 : 0};
     if (!impl->api->CreateFeature(command, &feature)) {
         return false;
     }
@@ -270,6 +282,18 @@ std::string Dlss::Problem() const {
 bool Dlss::HasFeature(const FeatureDesc&) const {
     return false;
 }
+namespace {
+/// BB_DLSS_PRESET: NGX render preset (0 driver default). Default 11 = K, the DLSS 4 transformer
+/// (1st gen), lighter than the 4.5 presets (L/M) on RTX 20; 10 = J; 6 = F (CNN).
+u32 Preset() {
+    static const u32 value = [] {
+        const char* env = std::getenv("BB_DLSS_PRESET");
+        return env && env[0] ? u32(std::strtoul(env, nullptr, 10)) : 11u;
+    }();
+    return value;
+}
+} // namespace
+
 bool Dlss::CreateFeature(vk::CommandBuffer, const FeatureDesc&) {
     return false;
 }

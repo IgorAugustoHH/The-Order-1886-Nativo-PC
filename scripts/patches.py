@@ -301,6 +301,10 @@ def main():
             raise ValueError('Modo foto: nao combinar candidato The Order com BB_FORCE_PATCHES')
         from order_photo_camera import compile_camera
         camera_writes=compile_camera(a.game_dir,a.out)
+    if os.environ.get('BB_ORDER_RESOLUTION'):
+        from order_resolution import resolution_writes as order_resolution_writes
+        camera_writes+=order_resolution_writes((a.out/'eboot.elf').read_bytes(),
+                                               os.environ['BB_ORDER_RESOLUTION'])
     if os.environ.get('BB_ORDER_DISABLE_DOF') == '1':
         raise ValueError('Teste global DoF The Order retirado a pedido de Igor; nao aplicar')
     if version and version!=a.app_version and not os.environ.get('BB_FORCE_PATCHES'):

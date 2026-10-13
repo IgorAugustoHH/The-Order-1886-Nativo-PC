@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport (The Order: 1886): DLSS inputs from the game's own temporal resolve inputs
+// (customresolve_cs_msaa*_temporal, see docs/order_dlss.md):
+//  - color: the 2x MSAA HDR scene, resolved with the game's inverse-luminance weighting
+//    (Pettineo, SIGGRAPH 2015 "Rendering The Alternate History of The Order: 1886");
+//  - motion: the prepass velocity target (A2B10G10R10: |x|, |y| in rg, signs in a), in pixels,
+//    previous - current, the same decode as the game's resolve;
+//  - depth: sample 0 of the scene depth.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2DMS color_tex;
+layout(binding = 1) uniform texture2D velocity_tex;
+layout(binding = 2) uniform texture2DMS depth_tex;
+layout(binding = 3, rgba16f) uniform writeonly image2D color_out;
+layout(binding = 4, rg16f) uniform writeonly image2D motion_out;
+layout(binding = 5, r32f) uniform writeonly image2D depth_out;
+layout(binding = 6) uniform texture2D exposure_tex; // 1x1 R32F log2 exposure (when enabled)
+
+layout(push_constant) uniform Constants {
+    uvec2 size;
+    float velocity_scale; // flatbuf dword 63 of the resolve: pixels per unit of velocity
+    float log2_exposure;  // flatbuf dword 60, used unless exposure_from_texture
+    uint samples;
+    uint depth_invert;
+    uint exposure_from_texture; // flatbuf dword 61 != 0
+};
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(uvec2(p), size))) {
+        return;
+    }
+    const float exposure = exp2(exposure_from_texture != 0u
+                                    ? texelFetch(exposure_tex, ivec2(0), 0).r : log2_exposure);
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    for (int s = 0; s < int(samples); ++s) {
+        const vec3 c = max(texelFetch(color_tex, p, s).rgb, vec3(0.0));
+        const float w = 1.0 / (1.0 + exposure * dot(c, vec3(0.299, 0.587, 0.114)));
+        sum += c * w;
+        weight_sum += w;
+    }
+    imageStore(color_out, p, vec4(sum / max(weight_sum, 1e-5), 1.0));
+
+    const vec4 v = texelFetch(velocity_tex, p, 0);
+    const uint signs = uint(3.0 * v.a);
+    const float vx = -v.x * ((signs & 1u) != 0u ? -1.0 : 1.0);
+    const float vy = v.y * ((signs & 2u) != 0u ? 1.0 : -1.0);
+    imageStore(motion_out, p, vec4(vec2(vx, vy) * velocity_scale, 0.0, 0.0));
+
+    const float d = texelFetch(depth_tex, p, 0).r;
+    imageStore(depth_out, p, vec4(depth_invert != 0u ? 1.0 - d : d));
+}
