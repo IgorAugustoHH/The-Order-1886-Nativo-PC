@@ -32,6 +32,28 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
+
+#ifdef _WIN32
+// bbport (Claude, 13/10): free physical RAM without pulling windows.h into this file.
+extern "C" __declspec(dllimport) int __stdcall GlobalMemoryStatusEx(void* status);
+#endif
+namespace {
+u64 AvailableRamMiB() {
+#ifdef _WIN32
+    struct {
+        u32 length, load;
+        u64 total_phys, avail_phys, total_page, avail_page, total_virtual, avail_virtual,
+            avail_extended;
+    } status{};
+    status.length = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        return status.avail_phys >> 20;
+    }
+#endif
+    return 0;
+}
+} // namespace
+
 namespace Vulkan {
 
 using Shader::HwStage;
@@ -356,7 +378,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // over the previous one. The driver validates the file (vendor, device, driver version)
     // and starts empty when it does not match. BB_DRIVER_PIPELINE_CACHE=0 disables it.
     const char* driver_cache_env = std::getenv("BB_DRIVER_PIPELINE_CACHE");
-    const bool persist = !(driver_cache_env && driver_cache_env[0] == '0');
+    // bbport (Claude, 13/10): opt-in now (BB_DRIVER_PIPELINE_CACHE=1). Runs 97/98: no measured
+    // compile-time gain, ~500 MiB of RAM held, and 30 s saves fed the RAM guard.
+    const bool persist = driver_cache_env && driver_cache_env[0] == '1';
     const auto cache_path =
         Common::FS::GetUserPath(Common::FS::PathType::ShaderDir) / "vk_pipeline_cache.bin";
     std::vector<u8> initial;
@@ -399,10 +423,34 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     std::printf("Driver pipeline cache: loaded %.1f MiB from %s\n",
                 double(initial.size()) / (1024.0 * 1024.0), cache_path.string().c_str());
     driver_cache_saver = std::jthread([this, cache_path](std::stop_token stop) {
-        const auto save = [&] {
+        // bbport (Claude, 13/10): getPipelineCacheData copies the whole driver cache (~650 MiB)
+        // into RAM before writing it; every 30 s that spike pushed runs 95-97/108 under the
+        // 700 MiB RAM guard. Ask the size first and only copy when free RAM covers it plus a
+        // margin (BB_DRIVER_CACHE_MARGIN_MB, default 1536); otherwise retry later.
+        static const u64 margin_mib = [] {
+            const char* env = std::getenv("BB_DRIVER_CACHE_MARGIN_MB");
+            return env ? std::strtoull(env, nullptr, 10) : 1536ull;
+        }();
+        const auto save = [&](bool final_save) -> bool {
+            size_t size = 0;
+            if (instance.GetDevice().getPipelineCacheData(*pipeline_cache, &size, nullptr) !=
+                    vk::Result::eSuccess ||
+                size == 0) {
+                return false;
+            }
+            const u64 free_mib = AvailableRamMiB();
+            const u64 size_mib = u64(size) >> 20;
+            if (!final_save && free_mib != 0 && free_mib < size_mib + margin_mib) {
+                static u32 skips = 0;
+                if (skips++ % 10 == 0) {
+                    std::printf("Driver pipeline cache: save of %llu MiB postponed (%llu MiB free)\n",
+                                (unsigned long long)size_mib, (unsigned long long)free_mib);
+                }
+                return false;
+            }
             auto [result, data] = instance.GetDevice().getPipelineCacheData(*pipeline_cache);
             if (result != vk::Result::eSuccess || data.empty()) {
-                return;
+                return false;
             }
             auto temp = cache_path;
             temp += ".tmp";
@@ -414,6 +462,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                     std::filesystem::rename(temp, cache_path, ec);
                 }
             }
+            return true;
         };
         u64 saved_compiles = g_bb_compiles_total.load();
         for (u32 ticks = 0; !stop.stop_requested(); ++ticks) {
@@ -423,13 +472,12 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             }
             SaveRecentPipelines();
             const u64 compiles = g_bb_compiles_total.load();
-            if (compiles != saved_compiles) {
+            if (compiles != saved_compiles && save(false)) {
                 saved_compiles = compiles;
-                save();
             }
         }
         if (g_bb_compiles_total.load() != saved_compiles) {
-            save();
+            save(true);
         }
         SaveRecentPipelines();
     });
@@ -739,6 +787,22 @@ bool PipelineCache::AsyncComputeOn() const {
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
+    {
+        // bbport (Claude, 13/10): run98 lost the device on an NVIDIA "Graphics Exception:
+        // SKEDCHECK11_TOTAL_THREADS" (a compute workgroup with an invalid thread count). Skip
+        // and log such dispatches instead of handing them to the GPU.
+        const auto& cs = liverpool->GetCsRegs();
+        const u64 x = cs.num_thread_x.full, y = cs.num_thread_y.full, z = cs.num_thread_z.full;
+        if (x == 0 || y == 0 || z == 0 || x > 1024 || y > 1024 || z > 64 || x * y * z > 1024) {
+            static std::atomic<u32> rejected{0};
+            if (rejected.fetch_add(1) < 32) {
+                std::printf("Compute guard: dispatch skipped, workgroup %llux%llux%llu at %#llx\n",
+                            (unsigned long long)x, (unsigned long long)y, (unsigned long long)z,
+                            (unsigned long long)cs.Address<u64>());
+            }
+            return nullptr;
+        }
+    }
     if (async_pipelines && async_done_count.load(std::memory_order_acquire) != 0) {
         DrainAsyncPipelines();
     }
