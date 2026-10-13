@@ -2202,8 +2202,13 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset, bool is_indirect) {
     const bool is_index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
     const vk::IndexType index_type = is_index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32;
     const u32 index_size = is_index16 ? sizeof(u16) : sizeof(u32);
-    const VAddr index_address =
-        regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
+    const VAddr base_address = regs.index_base_address.Address<VAddr>();
+    const VAddr index_address = base_address + u64(index_offset) * index_size;
+    if (base_address == 0) {
+        // upstream #5358: no index buffer at all; bind a valid buffer and read nothing from 0.
+        index_bind = {buffer_cache.GetStreamBuffer().Handle(), 0, index_type};
+        return;
+    }
 
     // Bind index buffer. upstream #5278: an indirect draw reads indices anywhere in the buffer
     // the INDEX_BUFFER_SIZE packet declared (max_index_size), not just the last direct draw's
