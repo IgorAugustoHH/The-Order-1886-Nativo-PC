@@ -29,7 +29,8 @@ public:
                                    vk::Image source, vk::Image dest);
 
     void CopyBetweenMsImages(u32 width, u32 height, u32 num_samples, vk::Format pixel_format,
-                             bool src_msaa, vk::Image source, vk::Image dest);
+                             bool src_msaa, vk::Image source, vk::Image dest,
+                             bool pack_depth_samples = false);
 
 private:
     void CreateShaders();
@@ -39,6 +40,7 @@ private:
         u32 num_samples;
         vk::Format attachment_format;
         bool src_msaa;
+        bool pack_depth_samples{};
 
         auto operator<=>(const MsPipelineKey&) const noexcept = default;
     };
@@ -54,6 +56,7 @@ private:
     vk::ShaderModule color_to_ms_depth_frag;
     vk::ShaderModule src_msaa_copy_frag;
     vk::ShaderModule src_non_msaa_copy_frag;
+    vk::ShaderModule ms_depth_to_color_frag;
 
     using MsPipeline = std::pair<MsPipelineKey, vk::UniquePipeline>;
     std::vector<MsPipeline> color_to_ms_depth_pl;

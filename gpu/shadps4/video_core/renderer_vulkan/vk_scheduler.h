@@ -767,18 +767,11 @@ public:
             return;
         }
         if (!record_chunk->Push(std::forward<Func>(func))) {
-            RetireChunk();
+            full_chunks.push_back(std::move(record_chunk));
+            record_chunk = AcquireChunk();
             const bool pushed = record_chunk->Push(std::forward<Func>(func));
             ASSERT(pushed);
         }
-    }
-
-    /// bbport: replaces the current chunk with a fresh one. The replacement is taken first, so
-    /// `record_chunk` is never null: code that re-enters the recording side (a guest memory
-    /// fault handled inline on this thread) used to find it null between the two steps.
-    void RetireChunk() {
-        auto next = AcquireChunk();
-        full_chunks.push_back(std::exchange(record_chunk, std::move(next)));
     }
 
     /// True when Record() defers commands (and RecordData() copies into chunks).
@@ -803,7 +796,8 @@ public:
             return;
         }
         if (RecordChunk::Capacity - record_chunk->Size() < bytes + 1024) {
-            RetireChunk();
+            full_chunks.push_back(std::move(record_chunk));
+            record_chunk = AcquireChunk();
         }
     }
 

@@ -469,6 +469,7 @@ private:
     /// (see BeginRenderingFull).
     std::unordered_set<VAddr> uncompressed_htiles;
     bool needs_barrier{};
+    bool focus_copy_bound{}; ///< strict scalar copy matched in this resource binding only
     // bbport: two-stage draw pipeline (stage B state; the thread is the last member so it
     // stops first).
     static inline thread_local const AmdGpu::Regs* stage_regs = nullptr;

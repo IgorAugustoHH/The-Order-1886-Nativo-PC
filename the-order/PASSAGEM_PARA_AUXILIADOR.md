@@ -69,6 +69,18 @@ Prints do Igor em 09/10 (cutscene da cela, masmorra/forja, sala com manequim, be
      adiados (32efe96). Conferir em `BufferCache::SynchronizeMemory` (ForEachNotInRange
      sobre pending_readbacks) que nenhuma escrita da CPU e perdida: os bits CPU sao
      limpos tambem para os bytes pulados.
+     **Conferido (10/10, Claude, branch `claude/determined-franklin-6xnw0q`):** era isso.
+     Bytes pendentes que a CPU reescreveu depois da falta eram pulados no upload e o bit CPU
+     era limpo; a GPU usava ate a chegada do readback uma mistura de dados novos da CPU com
+     dados velhos da GPU. Agora o upload compara com o snapshot e envia os bytes reescritos
+     (`deferred_readback_merge.h`). Corrigido tambem o caso de dois lotes pendentes sobre os
+     mesmos bytes (so o snapshot mais novo decide; o lote velho nao sobrescreve o novo).
+     Teste: `tests/test_deferred_readback.cpp` (alvo `deferred-readback-test`). A/B no jogo:
+     `BB_DEFERRED_READBACK=0` desliga os readbacks adiados (se os vertices ficarem certos sem
+     eles e errados com eles na build antiga, confirma a origem). Limites que continuam: uma
+     escrita da CPU com o mesmo valor que o guest tinha na falta nao e detectada, e uma
+     escrita no microssegundo entre a leitura e a escrita do ApplyDeferredReadbacks pode se
+     perder (raro).
    - A/B so por variavel: `BB_READBACKS`, `BB_DMA_CLEAN_SKIP=0`, `BB_DMA_SYNC_GENERATION=0`,
      `BB_ADDR64_LOADS=0` (este exige `BB_PIPELINE_CACHE=0`: o cache foi traduzido com ADDR64).
      Launchers prontos na raiz: `TESTE_A_SEM_PULO_DMA.bat`, `TESTE_B_SEM_ADDR64.bat`,

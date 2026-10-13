@@ -119,6 +119,9 @@ public:
     /// bbport: frame analysis: saves mip 0 of every layer of the image at `address` to `path`
     /// (a one-line text header, then the texels as the GPU holds them). Waits for the GPU.
     void DumpImage(VAddr address, const std::string& path);
+    /// Requested-frame focus diagnostic: resolve sample 0 of this exact bound image, no lookup.
+    void DumpFocusDepth(ImageId id, const std::string& path);
+    void DumpFocusScalar(ImageId id, const std::string& path);
     void DumpMsaaDepth(Image& image, const std::string& path);
     /// bbport: diagnostics: clears every layer and level of the colour image at `address`.
     void ClearImageAt(VAddr address, const std::array<float, 4>& color);

@@ -1,3 +1,6 @@
+#include "bb_scene_diag.h"
+#include "bb_face_depth_fix.h"
+#include "bb_face_depth_spirv.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -9,6 +12,7 @@
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_toggles.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
+#include "video_core/renderer_vulkan/dof_capture.h"
 #include "common/debug.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -260,6 +264,10 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 }
 
 Rasterizer::~Rasterizer() {
+    // All queued callbacks must finish while caches and their semaphores still exist.
+    draw_pipe.reset();
+    scheduler.SyncRecording();
+    scheduler.WaitSubmitted();
     scheduler.SetDrawPipeDrain({}); // the drain captured this rasterizer
 }
 
@@ -1021,7 +1029,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
                 continue;
             }
             runtime_fault_recover = &recover;
-            srt.walker_func(snapshot.user_data, flat.data());
+            srt.walker_func(snapshot.user_data, flat.data(), Shader::SrtMemoryMapped);
             runtime_fault_recover = nullptr;
             if (std::memcmp(flat.data(), snapshot.flat, snapshot.flat_size * sizeof(u32)) != 0) {
                 u32 first = 0, count = 0;
@@ -1404,7 +1412,25 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
-    const vk::Pipeline handle = pipeline->Handle();
+    const auto* face_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    const bool face_adjusted = pipeline->FaceDepthAdjusted() && face_ps && BbFaceDepth::ScopedDrawMatches(
+        vs_info.pgm_hash, face_ps->pgm_hash, BbFaceDepth::SecondaryEnabled(),
+        is_indexed, regs.num_indices, regs.num_instances.NumInstances(),
+        regs.depth_control.depth_enable && regs.depth_buffer.DepthValid(),
+        regs.depth_control.depth_write_enable,
+        regs.depth_control.depth_func == AmdGpu::CompareFunc::LessEqual);
+    const vk::Pipeline handle = pipeline->HandleForFaceDraw(face_adjusted);
+    if (BbFaceDepth::Enabled()) {
+        const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const u32 index_size = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2 : 4;
+        const u64 geometry_address = is_indexed ? regs.index_base_address.Address<VAddr>() +
+                                                 u64(index_offset) * index_size : 0;
+        if (ps) BbFaceDepth::LogDraw(vs_info.pgm_hash, ps->pgm_hash, is_indexed,
+            regs.num_indices, regs.num_instances.NumInstances(), pipeline->GetGraphicsKey().num_samples,
+            pipeline->GetGraphicsKey().depth_samples, regs.depth_control.depth_enable,
+            regs.depth_control.depth_write_enable, u32(regs.depth_control.depth_func),
+            face_adjusted, geometry_address);
+    }
     const u32 num_indices = regs.num_indices;
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
@@ -1419,7 +1445,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     });
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
-        FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
+        if (ps && FrameCapture::DofConstantsEnabled() && DofCapture::Includes(ps->pgm_hash)) {
+            const auto flat = ps->FlatUserData();
+            FrameCapture::DofBuffer(ps->pgm_hash, 99, 0, flat.data(), flat.size_bytes(),
+                                    FrameCapture::DofSource::FlatUserData);
+        }
         // bbport: BB_FOCUS_SHADER: the pixel stage's flattened user data, first draw only.
         if (ps && FocusShader() && ps->pgm_hash == FocusShader()) {
             static bool logged = false;
@@ -1448,6 +1478,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                           u32(regs.depth_control.depth_write_enable));
             FrameCapture::Note(note);
         }
+        // Constants belong to this draw, not to whichever draw follows it.
+        FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
     }
     DebugState.IncDrawCall();
 
@@ -1474,7 +1506,6 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const DrawIndirectParams params = {
         .vertex_sgpr_offset = vertex_sgpr_offset,
         .instance_sgpr_offset = instance_sgpr_offset,
-        .is_indirect = true,
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
     if (!pipeline) {
@@ -1552,6 +1583,15 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
+    if (BbFaceDepth::Enabled()) {
+        const auto& regs = Regs();
+        const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        if (ps) BbFaceDepth::LogDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+            ps->pgm_hash, is_indexed, 0, 0, pipeline->GetGraphicsKey().num_samples,
+            pipeline->GetGraphicsKey().depth_samples, regs.depth_control.depth_enable,
+            regs.depth_control.depth_write_enable, u32(regs.depth_control.depth_func),
+            false, indirect.args, true);
+    }
     const vk::Pipeline handle = pipeline->Handle();
     const vk::Buffer args = buffer->Handle();
     const u64 args_offset = base;
@@ -1572,6 +1612,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
             cmdbuf.drawIndirect(args, args_offset, max_count, stride);
         }
     });
+    if (FrameCapture::Active()) {
+        const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        FrameCapture::Indirect(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                               ps ? ps->pgm_hash : 0, indirect.args, count_address,
+                               stride, max_count);
+    }
     DebugState.IncDrawCall();
 
     ResetBindings(false);
@@ -1648,7 +1694,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     });
     DebugState.IncDispatch();
 
+    const bool focus_feedback = focus_copy_bound;
     ResetBindings(true);
+    // ResetBindings first marks the compute write, so CopyBuffer inserts its transfer barrier.
+    if (focus_feedback) buffer_cache.RecordFocusWritebacks();
     scheduler.KickRecording();
 }
 
@@ -1702,7 +1751,9 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     });
     DebugState.IncDispatch();
 
+    const bool focus_feedback = focus_copy_bound;
     ResetBindings(true);
+    if (focus_feedback) buffer_cache.RecordFocusWritebacks();
     scheduler.KickRecording();
 }
 
@@ -1816,6 +1867,7 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         }
         const auto tsharp =
             prepared ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
+        BbSceneDiag::Binding(stage.pgm_hash, tsharp.Address(), image_index);
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();
         if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
@@ -1878,6 +1930,7 @@ void Rasterizer::JoinBindHelper(void* context) {
 }
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
+    focus_copy_bound = false;
     if (IsComputeImageCopy(pipeline) || IsComputeMetaClear(pipeline) ||
         IsComputeImageClear(pipeline)) {
         return false;
@@ -2228,6 +2281,7 @@ void Rasterizer::ResetBindings(bool is_compute) {
     bound_images.clear();
     bound_buffers.clear();
     needs_barrier = false;
+    focus_copy_bound = false;
 }
 
 bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
@@ -2316,8 +2370,9 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     // Perform image copy
     VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
-    runtime.CopyColorAndDepth(&src_image, &dst_image);
-    return true;
+    // If no alias transfer exists, run the guest compute shader instead of
+    // declaring its work complete and silently omitting the dispatch.
+    return runtime.CopyColorAndDepth(&src_image, &dst_image);
 }
 
 bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
@@ -2382,6 +2437,32 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
     const u64 alignment = instance.StorageMinAlignment();
+    static const bool focus_sync = [] {
+        const char* e = std::getenv("BB_AIM_FOCUS_SYNC");
+        return e && e[0] == '1';
+    }();
+    bool focus_copy = false;
+    if (focus_sync && stage.sw_stage == Shader::SwStage::Compute &&
+        stage.pgm_hash == 0xb3d87c7f && stage.buffers.size() == 2) {
+        const auto& source = stage.buffers[0];
+        const auto& destination = stage.buffers[1];
+        if (!source.IsSpecial() && !source.is_written && !destination.IsSpecial() &&
+            destination.is_written) {
+            const auto src = prepared ? prepared->buffer_sharps[0] : source.GetSharp(stage);
+            const auto dst = prepared ? prepared->buffer_sharps[1] : destination.GetSharp(stage);
+            focus_copy = src.GetSize() <= 64_KB && dst.GetSize() > 0 && dst.GetSize() <= 64_KB &&
+                         memory->ClampRangeSize(src.base_address, src.GetSize()) == src.GetSize() &&
+                         memory->ClampRangeSize(dst.base_address, dst.GetSize()) == dst.GetSize() &&
+                         buffer_cache.IsFocusCopySource(src.base_address, src.GetSize());
+        }
+        static u32 logged = 0;
+        if (logged++ < 12)
+            std::printf("Aim focus copy scope: matched %u\n", unsigned(focus_copy));
+    }
+    if (focus_copy) {
+        focus_copy_bound = true;
+        buffer_cache.PollFocusWritebacks();
+    }
     for (u32 buffer_index = 0; buffer_index < stage.buffers.size(); ++buffer_index) {
         const auto& desc = stage.buffers[buffer_index];
         const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, buffer_index) : nullptr;
@@ -2395,6 +2476,16 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 push_data.AddOffset(binding.buffer, 0);
             }
             buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
+            if (FrameCapture::Active() && FrameCapture::DofConstantsEnabled() &&
+                stage.sw_stage == Shader::SwStage::Fragment &&
+                DofCapture::Includes(stage.pgm_hash) && ring->offset < ConstantRing::Capacity &&
+                ring->size <= ConstantRing::Capacity - ring->offset) {
+                // Read the exact stage-A snapshot that this draw binds, never guest memory
+                // which the game may already have reused, and never a GPU readback.
+                FrameCapture::DofBuffer(stage.pgm_hash, binding.buffer, ring->address,
+                    constant_ring->Data(ring->offset), ring->size,
+                    FrameCapture::DofSource::RingSnapshot, ring->offset);
+            }
         } else if (desc.IsSpecial()) {
             if (desc.buffer_type == Shader::BufferType::GdsBuffer) {
                 const auto* gds_buf = buffer_cache.GetGdsBuffer();
@@ -2406,6 +2497,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 if (FrameCapture::Active()) {
                     FrameCapture::Buffer(stage.pgm_hash, binding.buffer, 0,
                                          stage.FlatUserData().data(), ubo_size);
+                    if (stage.sw_stage == Shader::SwStage::Fragment) {
+                        FrameCapture::DofBuffer(stage.pgm_hash, binding.buffer, 0,
+                            stage.FlatUserData().data(), ubo_size,
+                            FrameCapture::DofSource::FlatBufferCPU);
+                    }
                 }
                 const u64 offset =
                     vk_buffer.Copy(stage.FlatUserData().data(), ubo_size, alignment);
@@ -2470,6 +2566,17 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 FrameCapture::Buffer(stage.pgm_hash, binding.buffer, vsharp.base_address,
                                      reinterpret_cast<const void*>(vsharp.base_address),
                                      memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
+                if (FrameCapture::DofConstantsEnabled() &&
+                    stage.sw_stage == Shader::SwStage::Fragment &&
+                    DofCapture::Includes(stage.pgm_hash) && !desc.is_written) {
+                    const u64 mapped_size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+                    const u64 bytes = std::min<u64>(mapped_size, DofCapture::MaxBufferBytes);
+                    if (bytes && !buffer_cache.IsRegionGpuModified(vsharp.base_address, bytes)) {
+                        FrameCapture::DofBuffer(stage.pgm_hash, binding.buffer, vsharp.base_address,
+                            reinterpret_cast<const void*>(vsharp.base_address), mapped_size,
+                            FrameCapture::DofSource::GuestCPU);
+                    }
+                }
             }
             // bbport: a V# above 256 MiB is a garbage sharp (The Order: 1886 bound 355 MiB
             // over partly unmapped memory on every draw; synchronizing it with VRAM at its
@@ -2492,7 +2599,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                               vsharp.GetSize(), size, stage.pgm_hash);
                 }
                 const auto [buffer, offset] = buffer_cache.ObtainBuffer(
-                    vsharp.base_address, size, desc.is_written, desc.is_formatted);
+                    vsharp.base_address, size, desc.is_written, desc.is_formatted,
+                    focus_copy);
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
                 // bbport: once per few shaders, not per draw (The Order: 1886 hit it 1,200 times
@@ -2569,7 +2677,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                               bool& barrier, bool on_helper) {
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
-    if (!on_helper && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot)) {
+    const bool focus_snapshot = !on_helper && FrameCapture::FocusDepthWanted(stage.pgm_hash);
+    if (!on_helper && !focus_snapshot && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot)) {
         // Descriptor writes: one per image (no mip arrays in a memoized set).
         for (u32 i = 0; i < stage.images.size(); ++i) {
             auto& set_write = set_writes[write_index++];
@@ -2603,6 +2712,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         const auto& image_desc = stage.images[image_index];
         const auto tsharp =
             prepared ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
+        BbSceneDiag::Binding(stage.pgm_hash, tsharp.Address(), image_index);
         // bbport: a hash lookup per texture per draw for a diagnostic only.
         static const bool warn_meta = std::getenv("BB_WARN_META_TEXTURE") != nullptr;
         if (warn_meta && texture_cache.IsMeta(tsharp.Address())) {
@@ -2611,7 +2721,32 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();
+        const auto capture_sharp = [&](const char* disposition) {
+            if (!FrameCapture::Active() || !FrameCapture::DrawDetailsEnabled()) return;
+            std::array<u32, 8> words{};
+            static_assert(sizeof(tsharp) == sizeof(words));
+            std::memcpy(words.data(), &tsharp, sizeof(words));
+            std::string text = fmt::format(
+                "stage {:016x} image {} {} address {:#x} load_mask {:02x} post_op {} "
+                "r128 {} depth {} written {} offsets",
+                stage.pgm_hash, image_index, disposition, tsharp.Address(),
+                image_desc.sharp_fetch.load_mask, u32(image_desc.post_op),
+                u32(image_desc.is_r128), u32(image_desc.is_depth), u32(image_desc.is_written));
+            for (const auto off : image_desc.sharp_fetch.offsets) text += fmt::format(" {}", off);
+            text += " words";
+            for (const auto word : words) text += fmt::format(" {:08x}", word);
+            // GetSharp can replace an invalid/unresolved source with Image::Null.
+            // Retain the separate flat-buffer fetch so that replacement is visible.
+            AmdGpu::Image raw{};
+            const bool fetched = image_desc.Fetch(stage.FlatUserData().data(), &raw);
+            std::array<u32, 8> raw_words{};
+            std::memcpy(raw_words.data(), &raw, sizeof(raw_words));
+            text += fmt::format(" flat_fetch_ok {} raw_flat_words", unsigned(fetched));
+            for (const auto word : raw_words) text += fmt::format(" {:08x}", word);
+            FrameCapture::Binding(text);
+        };
         if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid) {
+            capture_sharp("null");
             image_bindings.emplace_back(VideoCore::ImageId{}, &image_desc_storage.emplace_back());
             image_binding_entries.push_back(nullptr);
             binding_proxy_ok.push_back(false);
@@ -2622,6 +2757,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         if (!memory->IsValidGpuMapping(tsharp.Address(), 0) ||
             !IsKnownFormat(data_fmt, num_fmt) || !IsKnownTileMode(tsharp.GetTileMode()) ||
             !IsPlausibleImage(tsharp, memory)) {
+            capture_sharp("rejected");
             // bbport: once per (program, texture slot), naming them: which pass draws without
             // its texture (The Order: 1886 blurs the whole screen while aiming).
             static std::mutex rejected_mutex;
@@ -2645,6 +2781,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image_descriptor_array_sizes.push_back(1);
             continue;
         }
+
+        capture_sharp("passed_guard");
 
         const Shader::MipStorageFallbackMode mip_fallback_mode = image_desc.mip_fallback_mode;
         // Same as image_desc.NumBindings(stage), without fetching the T# again.
@@ -2761,6 +2899,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             auto& image = texture_cache.GetImage(image_id);
             auto& image_view = texture_cache.FindTexture(
                 image_id, desc, memo_entry ? &memo_entry->view_memo : nullptr, !on_helper);
+            if (focus_snapshot && !is_storage) {
+                if (const auto path = FrameCapture::FocusDepthPath(image.info, image_id.index);
+                    !path.empty()) {
+                    texture_cache.DumpFocusDepth(image_id, path);
+                }
+            }
             const auto binding = image.binding;
 
             // bbport: a proxied scene image sampled with normalized coordinates reads the proxy:
@@ -3437,6 +3581,22 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         const auto* depth =
             db_desc.first ? &texture_cache.GetImage(db_desc.first).info : nullptr;
         FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth);
+        if (FrameCapture::DrawDetailsEnabled()) {
+            const auto& r = Regs();
+            std::string msaa = fmt::format(
+                "pipeline_samples {} depth_samples {} guest_aa_samples {} "
+                "coverage_addr {} coverage_ena {} sample_interp {} mask_export {} "
+                "coverage_export {} color_samples",
+                u32(key.num_samples), u32(key.depth_samples), r.aa_config.NumSamples(),
+                u32(r.ps_input_addr.sample_coverage_ena), u32(r.ps_input_ena.sample_coverage_ena),
+                u32(r.ps_input_addr.persp_sample_ena || r.ps_input_addr.linear_sample_ena),
+                u32(r.depth_shader_control.mask_export_enable),
+                u32(r.depth_shader_control.coverage_to_mask_enable));
+            for (const auto sample : key.color_samples) msaa += fmt::format(" {}", u32(sample));
+            msaa += " sample_locs";
+            for (const auto loc : r.aa_sample_locs) msaa += fmt::format(" {:08x}", loc);
+            FrameCapture::RecordDrawState(msaa);
+        }
         if (depth) {
             // bbport: the depth state of the pass's first draw (sun shadow depth came out empty).
             const auto& r = Regs();

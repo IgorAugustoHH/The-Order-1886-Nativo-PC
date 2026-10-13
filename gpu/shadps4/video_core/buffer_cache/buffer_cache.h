@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <chrono>
+
 #include "bbport_copy.h"
 
 #include <atomic>
@@ -94,10 +96,14 @@ public:
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
 
+    /// Validates the rendered scalar source of the focus-copy pass, never arbitrary images.
+    bool IsFocusCopySource(VAddr device_addr, u32 size);
+
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
                                                              bool is_written,
-                                                             bool is_texel_buffer = false);
+                                                             bool is_texel_buffer = false,
+                                                             bool focus_copy = false);
 
     /// Attempts to obtain a buffer without modifying the cache contents.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBufferForImage(VAddr device_addr, u32 size);
@@ -127,6 +133,10 @@ public:
     /// Applies the write-backs whose submission completed. With a range: first waits for the
     /// (already submitted) write-backs covering it, so the caller needs no Finish.
     void ApplyWritebacks(VAddr wait_addr = 0, u64 wait_size = 0);
+    /// Only the exclusive focus-feedback queue: poll completed work before its next copy,
+    /// then record the new snapshot just after dispatch. No flush or GPU wait added.
+    void PollFocusWritebacks();
+    void RecordFocusWritebacks();
 
     /// bbport: called after each submission (Rasterizer::OnSubmit): writes the deferred
     /// readbacks whose submission completed to guest memory.
@@ -196,6 +206,8 @@ private:
     };
     struct WritebackBatch {
         u64 tick{};
+        std::chrono::steady_clock::time_point recorded_at{};
+        u64 recorded_frame{};
         Vulkan::StagingBufferRef staging{};
         std::vector<WritebackItem> items;
     };
@@ -228,6 +240,12 @@ private:
     std::atomic<bool> has_pending_readbacks{false};
     bool deferred_readbacks_enabled = true; ///< BB_DEFERRED_READBACK=0 turns it off
     bool early_writeback = false; ///< BB_EARLY_WRITEBACK=1 (no gain measured in run75)
+    bool focus_sync_enabled = false; ///< opt-in narrow scalar-copy path
+    struct FocusLatency {
+        u64 samples{}, frames_sum{}, max_frames{}, max_batches{};
+        double ms_sum{}, max_ms{};
+        std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
+    } focus_latency;
     std::mutex frame_written_mutex;
     std::vector<std::pair<VAddr, u64>> frame_written; ///< written ranges since the last record
     std::recursive_mutex writeback_mutex;

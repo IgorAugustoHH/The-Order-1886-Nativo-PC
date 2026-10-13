@@ -2927,6 +2927,10 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
         sdk_version = 0;
     }
 
+    if (EmulatorSettings.IsCopyGpuBuffers()) {
+        liverpool->ReserveCopyBufferSpace();
+    }
+
     Platform::IrqC::Instance()->Register(Platform::InterruptId::GpuIdle, ResetSubmissionLock,
                                          nullptr);
 

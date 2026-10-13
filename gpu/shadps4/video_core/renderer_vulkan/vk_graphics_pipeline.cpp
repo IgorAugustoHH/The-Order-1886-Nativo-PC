@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <utility>
+#include "bb_face_depth_fix.h"
+#include "bb_face_depth_spirv.h"
 #include <boost/container/small_vector.hpp>
 
 #include "common/assert.h"
@@ -170,6 +172,13 @@ GraphicsPipeline::GraphicsPipeline(
         shader_stages;
     auto stage = u32(Shader::SwStage::Vertex);
     if (infos[stage]) {
+        const auto* ps = infos[u32(Shader::SwStage::Fragment)];
+        if (BbFaceDepth::Enabled() && ps && BbFaceDepth::Matches(
+                infos[stage]->pgm_hash, ps->pgm_hash, key.num_samples, key.depth_samples,
+                key.num_color_attachments, key.z_format == AmdGpu::DepthBuffer::ZFormat::Z32Float,
+                BbFaceDepth::SecondaryEnabled())) {
+            face_depth_module = BbFaceDepth::Create(modules[stage], device, ps->pgm_hash);
+        }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eVertex,
             .module = modules[stage],
@@ -426,6 +435,20 @@ GraphicsPipeline::GraphicsPipeline(
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
+    // Keep the original for every draw. The adjusted variant is selected only for
+    // the selected per-material draw signatures, never for an entire shared skin material.
+    if (face_depth_module) {
+        shader_stages.front().module = *face_depth_module;
+        auto [adjusted_result, adjusted_pipe] =
+            device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+        if (adjusted_result == vk::Result::eSuccess) {
+            face_depth_pipeline = std::move(adjusted_pipe);
+            SetObjectName(device, *face_depth_pipeline, "Facial depth draw variant {}", debug_str);
+        } else {
+            LOG_WARNING(Render_Vulkan, "Facial depth variant failed; original pipeline retained: {}",
+                        vk::to_string(adjusted_result));
+        }
+    }
 }
 
 GraphicsPipeline::~GraphicsPipeline() = default;

@@ -12,6 +12,10 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
+#include "video_core/texture_cache/depth_alias_copy.h"
+#include <cstdlib>
+#include <cstdio>
+#include <atomic>
 
 #include <vulkan/vulkan_format_traits.hpp>
 
@@ -392,7 +396,7 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
                                   const VideoCore::Buffer* buffer, u64 offset) {
     const u32 num_mips = std::min(src->info.resources.levels, dst->info.resources.levels);
     const u32 num_layers = std::min(src->info.resources.layers, dst->info.resources.layers);
-    ASSERT(num_mips == 1);
+    ASSERT(src->info.resources.layers == dst->info.resources.layers && num_mips == 1);
 
     SetBackingSamples(dst, dst->info.num_samples, false);
     SetBackingSamples(src, src->info.num_samples);
@@ -504,7 +508,73 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
 }
 
-void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
+bool Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
+    static const bool fix = [] {
+        const char* value = std::getenv("BB_DEPTH_ALIAS_FIX");
+        return value && value[0] == '1';
+    }();
+    if (fix) {
+        using VideoCore::DepthAliasCopy;
+        const auto plan = VideoCore::PlanDepthAliasCopy(src->info, dst->info,
+                                                       instance.IsMaintenance8Supported());
+        static std::atomic<u32> logged{0};
+        const bool report = logged.fetch_add(1, std::memory_order_relaxed) < 48;
+        if (report) {
+            std::printf("Depth alias copy: route=%u src=0x%llx fmt=%u samples=%u %ux%u "
+                        "dst=0x%llx fmt=%u samples=%u %ux%u\n",
+                        u32(plan), (unsigned long long)src->info.guest_address,
+                        u32(src->info.pixel_format), src->info.num_samples,
+                        src->info.size.width, src->info.size.height,
+                        (unsigned long long)dst->info.guest_address,
+                        u32(dst->info.pixel_format), dst->info.num_samples,
+                        dst->info.size.width, dst->info.size.height);
+        }
+        switch (plan) {
+        case DepthAliasCopy::Direct:
+            CopyImage(src, dst);
+            return true;
+        case DepthAliasCopy::Buffer: {
+            const u64 copy_size = u64(src->info.size.width) * src->info.size.height *
+                                  src->info.size.depth * sizeof(float);
+            const auto copy_ref = staging_pool.Request(copy_size, VideoCore::MemoryType::DeviceLocal);
+            CopyImageWithBuffer(src, dst, copy_ref.buffer, copy_ref.offset);
+            return true;
+        }
+        case DepthAliasCopy::ColorToDepth:
+        case DepthAliasCopy::DepthToColor: {
+            SetBackingSamples(src, src->info.num_samples);
+            SetBackingSamples(dst, dst->info.num_samples, false);
+            scheduler.EndRendering();
+            bool needs_flush = Transit(src, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderRead);
+            const bool to_depth = plan == DepthAliasCopy::ColorToDepth;
+            needs_flush |= Transit(dst,
+                to_depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                         : vk::ImageLayout::eColorAttachmentOptimal,
+                to_depth ? vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                               vk::PipelineStageFlagBits2::eLateFragmentTests
+                         : vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                to_depth ? vk::AccessFlagBits2::eDepthStencilAttachmentWrite
+                         : vk::AccessFlagBits2::eColorAttachmentWrite);
+            if (needs_flush) FlushBarriers();
+            if (to_depth) {
+                blit_helper->ReinterpretColorAsMsDepth(dst->info.size.width, dst->info.size.height,
+                    dst->info.num_samples, src->info.pixel_format, dst->info.pixel_format,
+                    src->GetImage(), dst->GetImage());
+            } else {
+                blit_helper->CopyBetweenMsImages(dst->info.size.width, dst->info.size.height, 1,
+                    dst->info.pixel_format, true, src->GetImage(), dst->GetImage(), true);
+            }
+            dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
+            dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
+            return true;
+        }
+        case DepthAliasCopy::Unsupported:
+            if (report) LOG_WARNING(Render_Vulkan, "Depth alias transfer unsupported; source retained");
+            return false;
+        }
+    }
     if (src->info.num_samples == 1 && dst->info.num_samples == 1) {
         if (instance.IsMaintenance8Supported() ||
             src->info.props.is_depth == dst->info.props.is_depth) {
@@ -536,6 +606,7 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
     } else {
         LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
     }
+    return true; // compatibility path, unchanged when the experiment is disabled
 }
 
 void Runtime::CopyDepthStencil(VideoCore::Image* src, VideoCore::Image* dst,

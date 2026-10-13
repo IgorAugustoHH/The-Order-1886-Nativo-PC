@@ -102,6 +102,11 @@ public:
         return key;
     }
 
+    bool FaceDepthAdjusted() const { return bool(face_depth_pipeline); }
+    vk::Pipeline HandleForFaceDraw(bool eligible) const noexcept {
+        return eligible && face_depth_pipeline ? *face_depth_pipeline : Handle();
+    }
+
     /// Gets the attributes and bindings for vertex inputs.
     template <typename Attribute, typename Binding>
     void GetVertexInputs(VertexInputs<Attribute>& attributes, VertexInputs<Binding>& bindings,
@@ -114,6 +119,8 @@ private:
 
 private:
     GraphicsPipelineKey key;
+    vk::UniqueShaderModule face_depth_module{};
+    vk::UniquePipeline face_depth_pipeline{};
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 };
 

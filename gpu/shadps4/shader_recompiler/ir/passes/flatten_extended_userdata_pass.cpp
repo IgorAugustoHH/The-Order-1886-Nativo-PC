@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <string_view>
+#include <atomic>
+#include <bit>
+#include <vector>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <algorithm>
@@ -26,10 +29,12 @@
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/opcodes.h"
 #include "shader_recompiler/ir/passes/srt.h"
+#include "shader_recompiler/ir/srt_resource_use.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/ir/reg.h"
 #include "shader_recompiler/ir/srt_gvn_table.h"
 #include "shader_recompiler/ir/value.h"
+#include "bb_resource_audit.h"
 
 #ifdef ARCH_X86_64
 
@@ -38,21 +43,62 @@ using namespace Xbyak::util;
 // bbport: The Order: 1886 filled 32 MiB with SRT walkers ("code is too big"): walkers are
 // deduplicated below, and the (contiguous, for the signal handler) region is larger.
 static Xbyak::CodeGenerator g_srt_codegen(128_MB);
-static const u8* g_srt_codegen_start = nullptr;
-/// Walker code -> its first copy: shaders recompiled with the same resource table reuse it.
-static std::unordered_map<std::string_view, const u8*> g_srt_walkers;
-/// bbport: shaders are also translated on compile threads (vk_pipeline_cache.cpp): walker
-/// emission into the shared code buffer and its dedupe map are serialized.
+static std::atomic<std::uintptr_t> g_srt_codegen_start{0}, g_srt_published_end{0};
+static std::unordered_map<std::string, const u8*> g_srt_walkers;
 static std::recursive_mutex g_srt_mutex;
-
+namespace { static bool SrtWalkerSignalHandler(void*, void*); }
+static void PublishSrtCode() {
+    if (!g_srt_codegen_start.load(std::memory_order_relaxed)) {
+        g_srt_codegen_start.store(reinterpret_cast<std::uintptr_t>(g_srt_codegen.getCode()),
+                                  std::memory_order_release);
+        Core::Signals::Instance()->RegisterAccessViolationHandler(SrtWalkerSignalHandler, 1);
+    }
+    g_srt_published_end.store(reinterpret_cast<std::uintptr_t>(g_srt_codegen.getCurr()),
+                              std::memory_order_release);
+}
+extern "C" uint64_t runtime_memory_clamp(uintptr_t, uint64_t);
 namespace Shader {
+u64 PS4_SYSV_ABI SrtMemoryMapped(u64 address) {
+    return runtime_memory_clamp(address, 1);
+}
 
 PFN_SrtWalker RegisterWalkerCode(const u8* ptr, size_t size) {
     std::scoped_lock lock{g_srt_mutex};
     const auto func_addr = (PFN_SrtWalker)g_srt_codegen.getCurr();
     g_srt_codegen.db(ptr, size);
     g_srt_codegen.ready();
+    PublishSrtCode();
     return func_addr;
+}
+
+bool IsLegacySrtWalkerSafe(const u8* ptr, size_t size) {
+    size_t offset = 0;
+    bool failed_word_load = false;
+    while (offset < size) {
+        ZydisDecodedInstruction inst{};
+        ZydisDecodedOperand args[ZYDIS_MAX_OPERAND_COUNT]{};
+        if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+                inst, args, const_cast<u8*>(ptr + offset), std::min<size_t>(15, size - offset))))
+            return false;
+        if (inst.mnemonic == ZYDIS_MNEMONIC_MOV && args[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            args[0].mem.base == ZYDIS_REGISTER_RSI && args[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+            args[1].imm.value.u == 0) return false; // old unresolved flat slot
+        if (inst.mnemonic == ZYDIS_MNEMONIC_XOR && args[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            args[1].type == ZYDIS_OPERAND_TYPE_REGISTER && args[0].reg.value == args[1].reg.value) {
+            if (args[0].reg.value == ZYDIS_REGISTER_RDI) return false;
+            failed_word_load = args[0].reg.value == ZYDIS_REGISTER_R10D;
+        } else if (failed_word_load && inst.mnemonic == ZYDIS_MNEMONIC_NOP) {
+            return false;
+        } else {
+            if (failed_word_load && inst.mnemonic == ZYDIS_MNEMONIC_MOV &&
+                args[0].type == ZYDIS_OPERAND_TYPE_MEMORY && args[0].mem.base == ZYDIS_REGISTER_RSI &&
+                args[1].type == ZYDIS_OPERAND_TYPE_REGISTER && args[1].reg.value == ZYDIS_REGISTER_R10D)
+                return false;
+            failed_word_load = false;
+        }
+        offset += inst.length;
+    }
+    return true;
 }
 
 } // namespace Shader
@@ -85,54 +131,30 @@ static void DumpSrtProgram(const Shader::Info& info, const u8* code, size_t code
 }
 
 static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
-    // Only handle if the fault address is within the SRT code range
-    const u8* code_start = g_srt_codegen_start;
-    const u8* code_end = code_start + g_srt_codegen.getSize();
-    const void* code = Common::GetRip(context);
-    if (code < code_start || code >= code_end) {
-        return false; // Not in SRT code range
-    }
-
-    // Patch instruction to zero register
+    const auto pc = reinterpret_cast<std::uintptr_t>(Common::GetRip(context));
+    if (pc < g_srt_codegen_start.load(std::memory_order_acquire) ||
+        pc >= g_srt_published_end.load(std::memory_order_acquire) || Common::IsWriteError(context))
+        return false;
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
-    ZyanStatus status = Common::Decoder::Instance()->decodeInstruction(instruction, operands,
-                                                                       const_cast<void*>(code), 15);
-
-    ASSERT(ZYAN_SUCCESS(status) && instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
-           operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-           operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
-
-    size_t len = instruction.length;
-    const size_t patch_size = 3;
-    u8* code_patch = const_cast<u8*>(reinterpret_cast<const u8*>(code));
-
-    // We can only encounter rdi or r10d as the first operand in a
-    // fault memory access for SRT walker.
-    switch (operands[0].reg.value) {
-    case ZYDIS_REGISTER_RDI:
-        // mov rdi, [rdi + (off_dw << 2)] -> xor rdi, rdi
-        code_patch[0] = 0x48;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xFF;
-        break;
-    case ZYDIS_REGISTER_R10D:
-        // mov r10d, [rdi + (off_dw << 2)] -> xor r10d, r10d
-        code_patch[0] = 0x45;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xD2;
-        break;
-    default:
-        UNREACHABLE_MSG("Unsupported register for SRT walker patch");
+    const auto available = std::min<std::uintptr_t>(15,
+        g_srt_published_end.load(std::memory_order_acquire) - pc);
+    const auto status = Common::Decoder::Instance()->decodeInstruction(
+        instruction, operands, reinterpret_cast<void*>(pc), available);
+    if (!ZYAN_SUCCESS(status) || instruction.mnemonic != ZYDIS_MNEMONIC_MOV ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_MEMORY ||
+        (operands[0].reg.value != ZYDIS_REGISTER_RDI && operands[0].reg.value != ZYDIS_REGISTER_R10D))
         return false;
-    }
-
-    // Fill nops
-    memset(code_patch + patch_size, 0x90, len - patch_size);
-
-    LOG_WARNING(Render_Recompiler, "Patched SRT walker at {}, fault address {}", code,
-                fault_address);
-
+    BbResourceAudit::RecordFault(reinterpret_cast<void*>(pc), fault_address);
+    // A failed read applies only to this invocation. Keep code, cache and other
+    // users of the shared reader intact; the next invocation retries the MOV.
+    if (!Common::CompleteSrtReadFault(context, operands[0].reg.value == ZYDIS_REGISTER_RDI,
+                                     instruction.length)) return false;
+    static std::atomic<unsigned> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 16)
+        LOG_WARNING(Render_Recompiler, "Transient SRT read at {}, fault address {}; executable unchanged",
+                    reinterpret_cast<void*>(pc), fault_address);
     return true;
 }
 
@@ -142,8 +164,40 @@ using namespace Shader;
 // per-lookup errors flooded the log without saying which shader they belonged to).
 static thread_local u32 g_srt_failures = 0;
 static thread_local std::string g_srt_reason;
+static thread_local std::string g_srt_last_reason;
+static thread_local bool g_srt_measure = false;
+static thread_local std::string g_srt_stage;
+static thread_local u32 g_srt_resolved_words = 0;
+static thread_local std::unordered_map<std::string, u32> g_srt_reasons;
+// Opt-in translation audit. These counts describe fallback decisions, not GPU faults.
+static thread_local bool g_srt_audit = false;
+static thread_local u64 g_srt_audit_hash = 0;
+static thread_local u32 g_srt_dma_fallbacks = 0;
+static thread_local u32 g_srt_null_fallbacks = 0;
+static thread_local u32 g_srt_null_descriptors = 0;
+
+static bool AuditSrtShader(u64 hash) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> result;
+        if (const char* env = std::getenv("BB_SRT_AUDIT")) {
+            for (const char* p = env; *p;) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (end == p) { ++p; continue; }
+                result.push_back(value);
+                p = end;
+            }
+        }
+        return result;
+    }();
+    return std::ranges::find(hashes, hash) != hashes.end();
+}
 
 static void NoteSrtReason(std::string reason) {
+    if (g_srt_measure) {
+        g_srt_last_reason = reason;
+        ++g_srt_reasons[reason];
+    }
     if (g_srt_reason.empty()) {
         g_srt_reason = std::move(reason);
     }
@@ -888,44 +942,8 @@ static bool ZeroUnresolved() {
 /// materials read light parameters (position, colour, matrices) from per-light records indexed
 /// inside a loop, 14 values per shader; zero-filled, half the materials lit by the sun lost
 /// their lights. With direct memory access those are read from guest memory by the shader.
-static bool FeedsDescriptor(const IR::Inst* inst) {
-    const auto is_descriptor_operand = [](const IR::Inst* user, u32 operand) {
-        const std::string_view name = magic_enum::enum_name(user->GetOpcode());
-        if (name == "ImageHandle") {
-            return true;
-        }
-        if (name.starts_with("Image")) {
-            return operand <= 1; // image and sampler handles; the rest are coordinates
-        }
-        if (name.starts_with("LoadBuffer") || name.starts_with("StoreBuffer") ||
-            name.starts_with("BufferAtomic") || name == "ReadConstBuffer") {
-            return operand == 0;
-        }
-        return false;
-    };
-    boost::container::small_vector<const IR::Inst*, 64> work{inst};
-    boost::container::small_vector<const IR::Inst*, 64> seen{inst};
-    while (!work.empty()) {
-        const IR::Inst* const node = work.back();
-        work.pop_back();
-        for (const IR::Use& use : node->Uses()) {
-            if (is_descriptor_operand(use.user, use.operand)) {
-                return true;
-            }
-            if (use.user->GetOpcode() == IR::Opcode::ReadConst) {
-                continue; // an address: what is read there is its own lookup
-            }
-            if (std::ranges::find(seen, use.user) != seen.end()) {
-                continue;
-            }
-            if (seen.size() >= 4096) {
-                return true; // too far to tell: keep the null descriptor
-            }
-            seen.push_back(use.user);
-            work.push_back(use.user);
-        }
-    }
-    return false;
+static bool FeedsDescriptor(const IR::Inst* inst, bool* truncated = nullptr) {
+    return SrtFeedsDescriptor(inst, truncated);
 }
 
 /// An unresolved lookup is left to direct memory access (flat buffer offset 0) when it is data
@@ -934,10 +952,92 @@ static bool ReadFromMemory(const IR::Inst* use) {
     return EmulatorSettings.IsDirectMemoryAccessEnabled() && !FeedsDescriptor(use);
 }
 
+// Bounded dependency graph, with immediate bit patterns. It does not inspect guest pointers.
+static std::string AuditGraph(const IR::Inst* root) {
+    std::vector<const IR::Inst*> nodes{root};
+    std::unordered_map<const IR::Inst*, u32> ids{{root, 0}};
+    std::string json = "[";
+    bool truncated = false;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const auto* node = nodes[i];
+        if (i) json += ',';
+        json += fmt::format("{{\"id\":{},\"opcode\":{},\"args\":[", i,
+                            BbResourceAudit::Quote(magic_enum::enum_name(node->GetOpcode())));
+        const size_t argc = std::min<size_t>(node->NumArgs(), 64);
+        truncated |= argc != node->NumArgs();
+        for (size_t a = 0; a < argc; ++a) {
+            if (a) json += ',';
+            const auto value = node->Arg(a);
+            if (auto* child = value.TryInst()) {
+                if (!ids.contains(child) && nodes.size() < 64) {
+                    ids.emplace(child, u32(nodes.size())); nodes.push_back(child);
+                }
+                if (const auto it = ids.find(child); it != ids.end())
+                    json += fmt::format("{{\"ref\":{}}}", it->second);
+                else { json += "{\"truncated\":true}"; truncated = true; }
+            } else {
+                u64 bits{};
+                switch (value.Type()) {
+                case IR::Type::U1: bits = value.U1(); break;
+                case IR::Type::U8: bits = value.U8(); break;
+                case IR::Type::U16: bits = value.U16(); break;
+                case IR::Type::U32: bits = value.U32(); break;
+                case IR::Type::U64: bits = value.U64(); break;
+                case IR::Type::F32: bits = std::bit_cast<u32>(value.F32()); break;
+                case IR::Type::F64: bits = std::bit_cast<u64>(value.F64()); break;
+                case IR::Type::ScalarReg: bits = u32(value.ScalarReg()); break;
+                case IR::Type::VectorReg: bits = u32(value.VectorReg()); break;
+                default: bits = value.Hash(); break;
+                }
+                json += fmt::format("{{\"type\":{},\"bits\":{}}}",
+                                    BbResourceAudit::Quote(magic_enum::enum_name(value.Type())), bits);
+            }
+        }
+        json += "]}";
+    }
+    return json + "],\"graph_truncated\":" + (truncated ? "true" : "false");
+}
+
+static void AuditFallback(const IR::Inst* use, const char* route, u16 flat_dw,
+                          bool descriptor, bool classifier_truncated) {
+    if (!BbResourceAudit::Enabled()) return;
+    const auto graph = AuditGraph(use);
+    const auto fields = fmt::format(
+        "\"shader\":\"{:x}\",\"stage\":{},\"route\":{},\"reason\":{},"
+        "\"descriptor\":{},\"classifier_truncated\":{},\"flat_dw\":{},\"graph\":{}",
+        g_srt_audit_hash, BbResourceAudit::Quote(g_srt_stage), BbResourceAudit::Quote(route),
+        BbResourceAudit::Quote(g_srt_last_reason.empty() ? "unresolved parent or offset" : g_srt_last_reason),
+        descriptor, classifier_truncated, flat_dw, graph);
+    BbResourceAudit::Write("srt_fallback", fields, fields);
+}
+
 static void ZeroFillSlot(IR::Inst* use, PassInfo& pass_info, Xbyak::CodeGenerator& c) {
-    if (ReadFromMemory(use)) {
+    bool classifier_truncated = false;
+    const bool descriptor = FeedsDescriptor(use, &classifier_truncated);
+    if (EmulatorSettings.IsDirectMemoryAccessEnabled() && !descriptor) {
+        if (g_srt_measure) {
+            ++g_srt_dma_fallbacks;
+            if (g_srt_audit && g_srt_dma_fallbacks + g_srt_null_fallbacks <= 64) {
+                LOG_WARNING(Render_Recompiler,
+                            "SRT audit: shader={:#x} inst={} route=DMA opcode={}",
+                            g_srt_audit_hash, fmt::ptr(use), magic_enum::enum_name(use->GetOpcode()));
+            }
+        }
+        AuditFallback(use, "DMA_data", 0, false, classifier_truncated);
         return;
     }
+    if (g_srt_measure) {
+        ++g_srt_null_fallbacks;
+        g_srt_null_descriptors += descriptor;
+        if (g_srt_audit && g_srt_dma_fallbacks + g_srt_null_fallbacks <= 64) {
+            LOG_WARNING(Render_Recompiler,
+                        "SRT audit: shader={:#x} inst={} route=ZERO descriptor={} flat_dw={} opcode={}",
+                        g_srt_audit_hash, fmt::ptr(use), descriptor, pass_info.dst_off_dw,
+                        magic_enum::enum_name(use->GetOpcode()));
+        }
+    }
+    AuditFallback(use, descriptor ? "ZERO_descriptor" : "ZERO_data", pass_info.dst_off_dw,
+                  descriptor, classifier_truncated);
     c.mov(dword[rsi + (pass_info.dst_off_dw << 2)], 0);
     SetFlatbufOffset(use, pass_info.dst_off_dw);
     pass_info.dst_off_dw++;
@@ -972,6 +1072,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         return;
     }
 
+    g_srt_last_reason.clear();
     if (!Common::TryEmit(c, [&] { return PushPtr(c, pass_info, off_dw); })) {
         ++g_srt_failures;
         if (ZeroUnresolved()) {
@@ -981,6 +1082,15 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
+    const u16 subtree_start_dw = pass_info.dst_off_dw;
+    Xbyak::Label unmapped_subtree, subtree_done;
+    // The helper has the guest SysV ABI. RSI/RDI and the temporary saved stack
+    // pointer survive it; align even when nested pointer pushes vary the depth.
+    c.push(rdi); c.push(rsi); c.push(rbx);
+    c.mov(rbx, rsp); c.and_(rsp, -16);
+    c.call(r12); // callback supplied by the current process, no persisted address
+    c.mov(rsp, rbx); c.pop(rbx); c.pop(rsi); c.pop(rdi);
+    c.test(rax, rax); c.jz(unmapped_subtree, Xbyak::CodeGenerator::T_NEAR);
 
     // First copy all the src data from this tree level
     // That way, all data that was contiguous in the guest SRT is also contiguous in the
@@ -991,6 +1101,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
+            g_srt_last_reason.clear();
             if (!Common::TryEmit(c, [&] {
                     return ComputeOffset(c, r10d, pass_info, src_off_dw);
                 })) {
@@ -1008,6 +1119,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
 
         SetFlatbufOffset(use, pass_info.dst_off_dw);
         pass_info.dst_off_dw++;
+        if (g_srt_measure) ++g_srt_resolved_words;
     }
 
     // Then visit any children used as pointers
@@ -1017,6 +1129,13 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         }
     }
 
+    c.jmp(subtree_done, Xbyak::CodeGenerator::T_NEAR);
+    c.L(unmapped_subtree);
+    // Null/unmapped tables are temporary. Only this subtree's assigned slots
+    // are zero for this call; valid sibling roots and original userdata survive.
+    for (u32 dw = subtree_start_dw; dw < pass_info.dst_off_dw; ++dw)
+        c.mov(dword[rsi + (dw << 2)], 0);
+    c.L(subtree_done);
     PopPtr(c);
 }
 
@@ -1028,17 +1147,9 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         return;
     }
 
-    // Register the signal handler for SRT walker, if not already registered
-    if (g_srt_codegen_start == nullptr) {
-        g_srt_codegen_start = c.getCurr();
-        auto* signals = Core::Signals::Instance();
-        // Call after the memory invalidation handler
-        constexpr u32 priority = 1;
-        signals->RegisterAccessViolationHandler(SrtWalkerSignalHandler, priority);
-    }
-
     const size_t start_size = c.getSize();
     info.srt_info.walker_func = c.getCurr<PFN_SrtWalker>();
+    c.push(r12); c.mov(r12, rdx); // process-local callback argument, never serialized
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
 
@@ -1046,7 +1157,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, c);
     }
 
-    c.ret();
+    c.pop(r12); c.ret();
     c.ready();
 
     info.srt_info.walker_func_size =
@@ -1057,7 +1168,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
     // mean an equal walker.
     {
         const auto* code = reinterpret_cast<const char*>(info.srt_info.walker_func);
-        const std::string_view key{code, info.srt_info.walker_func_size};
+        const std::string key{code, info.srt_info.walker_func_size};
         if (const auto it = g_srt_walkers.find(key); it != g_srt_walkers.end()) {
             info.srt_info.walker_func = reinterpret_cast<PFN_SrtWalker>(const_cast<u8*>(it->second));
             c.setSize(start_size);
@@ -1066,6 +1177,8 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         }
     }
 
+    info.srt_info.reader_revision = SrtReaderRevision;
+    PublishSrtCode();
     if (EmulatorSettings.IsDumpShaders()) {
         DumpSrtProgram(info, reinterpret_cast<const u8*>(info.srt_info.walker_func),
                        info.srt_info.walker_func_size);
@@ -1228,8 +1341,15 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
         }
 
         IR::Inst* base = inst->Arg(0).Inst();
-        if (auto* inst = base->Arg(0).TryInst();
-            inst && inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+        if (auto* lane_read = base->Arg(0).TryInst();
+            lane_read && lane_read->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            if (BbResourceAudit::Enabled()) {
+                const auto fields = fmt::format(
+                    "\"shader\":\"{:x}\",\"stage\":{},\"route\":\"GPU_pointer_readfirstlane\",\"graph\":{}",
+                    program.info.pgm_hash, BbResourceAudit::Quote(magic_enum::enum_name(program.info.sw_stage)),
+                    AuditGraph(inst));
+                BbResourceAudit::Write("srt_gpu_pointer", fields, fields);
+            }
             continue;
         }
         ASSERT_MSG(IsReadConstSource(base->Arg(0)), "ReadConst base low not from constant memory");
@@ -1251,7 +1371,43 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
 
     g_srt_failures = 0;
     g_srt_reason.clear();
+    g_srt_last_reason.clear();
+    g_srt_audit = AuditSrtShader(program.info.pgm_hash);
+    g_srt_measure = g_srt_audit || BbResourceAudit::Enabled();
+    g_srt_stage = std::string(magic_enum::enum_name(program.info.sw_stage));
+    g_srt_resolved_words = 0;
+    g_srt_reasons.clear();
+    g_srt_audit_hash = program.info.pgm_hash;
+    g_srt_dma_fallbacks = g_srt_null_fallbacks = g_srt_null_descriptors = 0;
+    program.info.srt_info.reader_revision = SrtReaderRevision;
     GenerateSrtProgram(program.info, pass_info);
+    if (BbResourceAudit::Enabled()) {
+        std::string reasons = "{";
+        for (const auto& [reason, count] : g_srt_reasons) {
+            if (reasons.size() > 1) reasons += ',';
+            reasons += BbResourceAudit::Quote(reason) + ':' + std::to_string(count);
+        }
+        reasons += '}';
+        BbResourceAudit::Write("srt_summary", fmt::format(
+            "\"shader\":\"{:x}\",\"stage\":{},\"readconsts\":{},\"roots\":{},"
+            "\"flat_words\":{},\"resolved_words\":{},\"unresolved\":{},\"dma\":{},"
+            "\"zero_descriptors\":{},\"zero_data\":{},\"reasons\":{},"
+            "\"walker_start\":{},\"walker_bytes\":{}",
+            program.info.pgm_hash, BbResourceAudit::Quote(g_srt_stage), all_readconsts.size(),
+            pass_info.srt_roots.size(), program.info.srt_info.flattened_bufsize_dw,
+            g_srt_resolved_words, g_srt_failures, g_srt_dma_fallbacks, g_srt_null_descriptors,
+            g_srt_null_fallbacks - g_srt_null_descriptors, reasons,
+            reinterpret_cast<uintptr_t>(program.info.srt_info.walker_func),
+            program.info.srt_info.walker_func_size), {}, true);
+    }
+    if (g_srt_audit) {
+        LOG_WARNING(Render_Recompiler,
+                    "SRT audit summary: shader={:#x} stage={} unresolved={} dma_fallbacks={} "
+                    "zero_fallbacks={} zero_descriptor_fallbacks={} detail_limit=64",
+                    program.info.pgm_hash, magic_enum::enum_name(program.info.sw_stage),
+                    g_srt_failures, g_srt_dma_fallbacks, g_srt_null_fallbacks,
+                    g_srt_null_descriptors);
+    }
     if (g_srt_failures != 0) {
         static std::mutex mutex;
         static std::set<u64> reported;
