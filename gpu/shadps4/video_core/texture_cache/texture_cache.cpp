@@ -1,3 +1,4 @@
+#include "bb_scene_diag.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -1068,6 +1069,11 @@ void TextureCache::RefreshImage(Image& image) {
     }
 
     runtime.UploadImage(&image, buffer, image_copies);
+    if (BbSceneDiag::Enabled()) {
+        BbSceneDiag::image_bytes += image.info.guest_size;
+        ++BbSceneDiag::image_uploads;
+        BbSceneDiag::Event("image_upload_submitted", image.info.guest_address, image.info.guest_size, image_copies.size());
+    }
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,

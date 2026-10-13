@@ -1,3 +1,4 @@
+#include "bb_scene_diag.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -20,6 +21,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/deferred_readback_merge.h"
 #include "video_core/buffer_cache/memory_tracker.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -112,6 +114,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     deferred_readbacks_enabled = deferred_readbacks_enabled &&
         EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Relaxed;
     std::printf("Buffer cache: pooled sparse backing (VMA), block %u KiB\n", block_size >> 10);
+    std::fprintf(stderr, "Readback merge: %s; deferred=%d\n",
+                 DeferredReadbackMergeFixed() ? "fixed-1cee927" : "legacy-before-1cee927",
+                 int(deferred_readbacks_enabled));
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * num_arena_pages) * sizeof(vk::DeviceAddress);
@@ -451,39 +456,29 @@ void BufferCache::ApplyDeferredReadbacks() {
     {
         std::scoped_lock lock{deferred_mutex};
         bool applied = false;
-        std::vector<u8> current;
         while (!deferred_readbacks.empty() && scheduler.IsFree(deferred_readbacks.front().tick)) {
             DeferredBatch batch = std::move(deferred_readbacks.front());
             deferred_readbacks.pop_front();
             applied = true;
             batch.staging.buffer->Invalidate(batch.staging.offset, batch.staging.size);
-            for (const auto& item : batch.items) {
-                const u8* gpu = batch.staging.mapped + item.staging_offset;
-                const u8* before = batch.snapshot.data() + item.snapshot_offset;
-                current.resize(item.size);
-                memory->CopySparseMemory(item.addr, current.data(), item.size);
-                // GPU data goes where the guest left its bytes as they were at the fault.
-                u64 changed = 0;
-                for (u64 i = 0; i < item.size;) {
-                    if (current[i] != before[i]) {
-                        ++changed;
-                        ++i;
-                        continue;
+            // GPU data goes where the guest left its bytes as they were at the fault.
+            ApplyDeferredBatch(
+                batch, deferred_readbacks,
+                [&](const DeferredItem& item) { return batch.staging.mapped + item.staging_offset; },
+                [&](VAddr addr, u8* dst, u64 size) { memory->CopySparseMemory(addr, dst, size); },
+                [&](VAddr addr, const u8* src, u64 size) {
+                    memory->TryWriteBacking(reinterpret_cast<void*>(addr), src, size);
+                },
+                [&](const DeferredItem& item, u64 changed) {
+                    if (!changed) {
+                        return;
                     }
-                    u64 j = i;
-                    while (j < item.size && current[j] == before[j]) {
-                        ++j;
-                    }
-                    memory->TryWriteBacking(reinterpret_cast<void*>(item.addr + i), gpu + i, j - i);
-                    i = j;
-                }
-                if (changed) {
                     Readbacks().NoteChanged(changed);
+                    if (BbSceneDiag::Enabled()) BbSceneDiag::rewritten_readback_bytes += changed;
                     if (!gpu_modified_ranges.Intersects(item.addr, item.size)) {
                         reupload.emplace_back(item.addr, item.size);
                     }
-                }
-            }
+                });
             staging_pool.FreeDeferred(batch.staging);
         }
         if (applied) {
@@ -1037,6 +1032,13 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
             }
             std::scoped_lock lock{deferred_mutex};
             pending_readbacks.ForEachNotInRange(addr, size, add_copy);
+            // Pending bytes the guest wrote after the fault are newer than the arena's GPU
+            // data: skipping them left the arena half new CPU data, half old GPU data until
+            // the readback arrived (ApplyDeferredReadbacks keeps these bytes in guest memory).
+            ForEachRewrittenPending(
+                deferred_readbacks, addr, size,
+                [&](VAddr src, u8* dst, u64 n) { memory->CopySparseMemory(src, dst, n); },
+                add_copy);
         },
         [&] { src_buffer = UploadCopies(arena, copies, total_size_bytes); });
 
@@ -1085,6 +1087,7 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
         return nullptr;
     }
     BbStats::buffer_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);
+    if (BbSceneDiag::Enabled()) BbSceneDiag::buffer_bytes += total_size_bytes;
     const auto staging = staging_pool.Request(total_size_bytes, MemoryType::HostUncached);
     // bbport: the guest memory is copied into staging on the copy threads, started now in
     // groups of about 1 MiB; submission and guest-visible fences wait for them
