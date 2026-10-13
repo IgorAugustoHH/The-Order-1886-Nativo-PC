@@ -168,11 +168,17 @@ def main():
                    '--patches', str(out / 'patches.bin'), '--app0', str(game),
                    '--user', str(user_dir),
                    '--timeout', env.get('BB_TIMEOUT', '0'), *args]
+        capture_wrapper = bool(env.get('BB_RENDERDOC_CMD') or env.get('BB_RENDERDOC_PREFIX'))
+        if capture_wrapper:
+            sys.path.insert(0, str(PORT.parent))
+            from captura_gpu import wrap_command
+            command = wrap_command(command, env, PORT)
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
         code = subprocess.run(command, stdin=subprocess.DEVNULL, creationflags=no_console()).returncode
         # The game's own exit code (0xC0000409: fail-fast, 0xC0000005: access violation, ...):
         # some sessions ended with nothing else in the log.
-        print(f'Game exit code {code} ({code & 0xFFFFFFFF:#010x})', flush=True)
+        label = 'RenderDoc wrapper exit code (nao e o codigo do jogo)' if capture_wrapper else 'Game exit code'
+        print(f'{label} {code} ({code & 0xFFFFFFFF:#010x})', flush=True)
         return code
     finally:
         if mod_view:

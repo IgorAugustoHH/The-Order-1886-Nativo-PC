@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <span>
 #include <vector>
+#include "bb_resource_audit.h"
+#include <fmt/format.h>
 #include <boost/container/static_vector.hpp>
 #include "common/assert.h"
 #include "common/types.h"
@@ -244,8 +246,17 @@ struct Info : InfoPersistent {
     const std::vector<u32>* flatbuf_snapshot{};
 
     void RefreshFlatBuf() {
+        // Initialize fault recording in ordinary code before executing a cached walker.
+        const bool audit = BbResourceAudit::Enabled();
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         if (flatbuf_snapshot) {
+            if (audit) {
+                const auto fields = fmt::format(
+                    "\"shader\":\"{:x}\",\"source_words\":{},\"required_words\":{},\"size_mismatch\":{}",
+                    pgm_hash, flatbuf_snapshot->size(), flattened_ud_buf.size(),
+                    flatbuf_snapshot->size() != flattened_ud_buf.size());
+                BbResourceAudit::Write("flat_snapshot_layout", fields, "snapshot:" + fields);
+            }
             std::fill(flattened_ud_buf.begin(), flattened_ud_buf.end(), 0u);
             std::copy_n(flatbuf_snapshot->begin(),
                         std::min(flatbuf_snapshot->size(), flattened_ud_buf.size()),
@@ -255,7 +266,7 @@ struct Info : InfoPersistent {
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {
-            srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
+            srt_info.walker_func(user_data.data(), flattened_ud_buf.data(), SrtMemoryMapped);
         }
     }
 

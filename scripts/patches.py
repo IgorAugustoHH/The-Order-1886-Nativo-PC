@@ -295,10 +295,20 @@ def main():
     # The patches are byte writes at the addresses of one game version: on another version they
     # would corrupt code. Such a game runs unpatched (run.sh/run.py then choose 30 FPS).
     version=game_app_version(a.game_dir)
+    camera_writes=[]
+    if os.environ.get('BB_ORDER_PHOTO_CAMERA_UNLOCK') == '1':
+        if os.environ.get('BB_FORCE_PATCHES'):
+            raise ValueError('Modo foto: nao combinar candidato The Order com BB_FORCE_PATCHES')
+        from order_photo_camera import compile_camera
+        camera_writes=compile_camera(a.game_dir,a.out)
+    if os.environ.get('BB_ORDER_DISABLE_DOF') == '1':
+        raise ValueError('Teste global DoF The Order retirado a pedido de Igor; nao aplicar')
     if version and version!=a.app_version and not os.environ.get('BB_FORCE_PATCHES'):
-        blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,0)
+        blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(camera_writes))
+        for offset,data in camera_writes:
+            blob+=struct.pack('<QQ',offset,len(data))+data
         (a.out/'patches.bin').write_bytes(blob)
-        print(f'Patches: game version {version}, patches are for {a.app_version}: none applied '
+        print(f'Patches: game version {version}, Bloodborne patches are for {a.app_version}: none applied '
               '(30 FPS, no effect or resolution patches)')
         return
     names=FPS_PRESETS[a.fps]+[n.strip() for n in a.extra.split(';') if n.strip()]

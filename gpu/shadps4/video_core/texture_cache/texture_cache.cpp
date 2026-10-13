@@ -141,6 +141,46 @@ void TextureCache::DumpImage(VAddr address, const std::string& path) {
     }
 }
 
+void TextureCache::DumpFocusDepth(ImageId id, const std::string& path) {
+    if (!id || path.empty()) return;
+    auto& image = slot_images[id];
+    const auto& info = image.info;
+    if (info.pixel_format != vk::Format::eD32Sfloat || !info.props.is_depth ||
+        info.num_samples <= 1 || info.resources.layers != 1 ||
+        u64(info.size.width) * info.size.height * 4 > 8_MB) {
+        std::printf("Focus depth snapshot: unsupported bound image %u\n", id.index);
+        return;
+    }
+    DumpMsaaDepth(image, path);
+}
+
+void TextureCache::DumpFocusScalar(ImageId id, const std::string& path) {
+    if (!id || path.empty()) return;
+    auto& image = slot_images[id];
+    const auto& info = image.info;
+    if (info.pixel_format != vk::Format::eR32Sfloat || info.size.width != 1 ||
+        info.size.height != 1 || info.size.depth != 1 || info.num_samples != 1 ||
+        info.resources.layers != 1 || info.resources.levels != 1) return;
+    const auto staging = runtime.GetStagingPool().Request(4, MemoryType::HostCached, 16);
+    const vk::BufferImageCopy copy{
+        .bufferOffset = staging.offset,
+        .imageSubresource{vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageExtent{1, 1, 1},
+    };
+    runtime.DownloadImage(&image, staging.buffer, std::span{&copy, 1});
+    scheduler.Finish();
+    staging.Invalidate();
+    if (auto* file = std::fopen(path.c_str(), "wb")) {
+        std::fprintf(file, "1 1 1 4 R32Sfloat\n");
+        std::fwrite(staging.mapped, 1, 4, file);
+        std::fclose(file);
+        float value;
+        std::memcpy(&value, staging.mapped, sizeof(value));
+        std::printf("Focus scalar dump: %#llx value %.9g -> %s\n",
+                    static_cast<unsigned long long>(info.guest_address), value, path.c_str());
+    }
+}
+
 void TextureCache::ClearImageAt(VAddr address, const std::array<float, 4>& color) {
     bool cleared = false;
     ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
@@ -417,17 +457,18 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
         RegisterImage(new_image_id);
 
-        // insert() may have grown slot_images and moved every image: `cache_image` would then
-        // point at freed storage, so look it up again.
-        auto& old_image = slot_images[cache_image_id];
-
         // Inherit image usage
         auto& new_image = slot_images[new_image_id];
-        new_image.usage = old_image.usage;
+        new_image.usage = cache_image.usage;
         new_image.flags &= ~ImageFlagBits::Dirty;
         // When creating a depth buffer through overlap resolution don't clear it on first use.
         new_image.info.meta_info.htile_clear_mask = 0;
-        runtime.CopyColorAndDepth(&old_image, &new_image);
+        if (!runtime.CopyColorAndDepth(&cache_image, &new_image)) {
+            // A missing transfer is not a successful cache conversion. Keep the
+            // only GPU copy of the old contents; let normal overlap handling retry.
+            FreeImage(new_image_id);
+            return {};
+        }
 
         // Free the cache image.
         FreeImage(cache_image_id);
@@ -952,12 +993,10 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
         }
         Image& stencil_image = slot_images[stencil_id];
         TouchImage(stencil_image);
-        // insert() above may have grown slot_images and moved every image, leaving `image`
-        // pointing at freed storage: look the depth image up again.
-        stencil_image.AssociateDepth(image_id, slot_images[image_id].image_uid);
+        stencil_image.AssociateDepth(image_id, image.image_uid);
     }
 
-    return slot_images[image_id].FindView(desc.view_info, false);
+    return image.FindView(desc.view_info, false);
 }
 
 void TextureCache::RefreshImage(Image& image) {

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include "bb_compile_budget.h"
+#include "bb_compile_queue.h"
+#include "bb_scene_diag.h"
+#include "bb_face_depth_fix.h"
+#include "bb_particle_srt.h"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -279,7 +284,6 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         info.sw.vs.step_rate_1 = regs.vgt_instance_step_rate_1;
         info.sw.vs.vertex_sgpr_offset = sel.draw_indirect_params.vertex_sgpr_offset;
         info.sw.vs.instance_sgpr_offset = sel.draw_indirect_params.instance_sgpr_offset;
-        info.sw.vs.is_indirect = sel.draw_indirect_params.is_indirect;
         info.sw.vs.tess_emulated_primitive =
             regs.primitive_type == AmdGpu::PrimitiveType::RectList ||
             regs.primitive_type == AmdGpu::PrimitiveType::QuadList;
@@ -383,6 +387,14 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     const bool persist = driver_cache_env && driver_cache_env[0] == '1';
     const auto cache_path =
         Common::FS::GetUserPath(Common::FS::PathType::ShaderDir) / "vk_pipeline_cache.bin";
+    const auto startup_begin = std::chrono::steady_clock::now();
+    const auto startup_mark = [&](const char* stage) {
+        std::fprintf(stderr, "Startup cache: %s; elapsed_ms=%.1f\n", stage,
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - startup_begin).count());
+        std::fflush(stderr);
+    };
+    startup_mark("driver file read begin");
     std::vector<u8> initial;
     if (persist) {
         if (std::FILE* f = std::fopen(cache_path.string().c_str(), "rb")) {
@@ -398,11 +410,14 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             std::fclose(f);
         }
     }
+    startup_mark("driver file read end");
     const vk::PipelineCacheCreateInfo cache_ci = {
         .initialDataSize = initial.size(),
         .pInitialData = initial.empty() ? nullptr : initial.data(),
     };
+    startup_mark("Vulkan createPipelineCache begin");
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique(cache_ci);
+    startup_mark("Vulkan createPipelineCache returned");
     if (cache_result != vk::Result::eSuccess && !initial.empty()) {
         std::printf("Driver pipeline cache: file rejected (%s), starting empty\n",
                     vk::to_string(cache_result).c_str());
@@ -415,8 +430,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
     // bbport: after the driver cache exists, so preloaded pipelines use it too.
+    startup_mark("WarmUp begin");
     WarmUp();
+    startup_mark("WarmUp end");
     StartAsyncCompilers();
+    startup_mark("async compiler start end");
     if (!persist) {
         return;
     }
@@ -542,6 +560,7 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         info.pgm_base = params.Base();
         info.user_data = params.user_data;
         info.RefreshFlatBuf();
+        if (BbParticleSrt::Enabled()) BbParticleSrt::Normalize(info);
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
@@ -567,12 +586,14 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         DrainAsyncPipelines(); // finished permutations first: this draw may need one
     }
     shader_pending = false;
+    BbSceneDiag::Poll();
     if (!RefreshGraphicsKey(sel) || shader_pending) {
+        BbSceneDiag::Count(shader_pending ? BbSceneDiag::draw_shader : BbSceneDiag::invalid_key);
         shader_pending = false;
         sel.fetch_shader.reset();
         return nullptr;
     }
-    if (async_pipelines) {
+    if (async_pipelines && !synchronous_graphics) {
         if (const auto found = graphics_pipelines.find(sel.graphics_key);
             found != graphics_pipelines.end()) {
             NoteUsed(found->second.get());
@@ -580,6 +601,13 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         // Not built yet: queue it once and skip this draw.
         if (async_pending.insert(sel.graphics_key).second) {
+            const auto diag_key = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
+            BbSceneDiag::Event("graphics_requested", diag_key);
+            if (BbSceneDiag::Enabled()) {
+                for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+                    if (sel.infos[stage]) BbSceneDiag::Event("graphics_stage", diag_key, sel.infos[stage]->pgm_hash, stage);
+                }
+            }
             AsyncGraphicsJob job{};
             job.key = sel.graphics_key;
             for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
@@ -597,6 +625,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
             async_cv.notify_one();
         }
+        BbSceneDiag::Count(BbSceneDiag::draw_pipeline);
         sel.fetch_shader.reset();
         return nullptr;
     }
@@ -604,6 +633,11 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
+        BbSceneDiag::Event("graphics_requested", pipeline_hash);
+        if (BbSceneDiag::Enabled()) {
+            for (u32 stage = 0; stage < MaxShaderStages; ++stage)
+                if (sel.infos[stage]) BbSceneDiag::Event("graphics_stage", pipeline_hash, sel.infos[stage]->pgm_hash, stage);
+        }
         CompileTimer timer;
 
         GraphicsPipeline::SerializationSupport sdata{};
@@ -612,6 +646,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
 
         it.value()->storage_name = RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        BbSceneDiag::Event("graphics_ready", pipeline_hash);
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -629,6 +664,14 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 }
 
 void PipelineCache::StartAsyncCompilers() {
+    const auto flag = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value && value[0] == '1';
+    };
+    fair_compile_queue = flag("BB_COMPILE_FAIR_QUEUE");
+    aggressive_compile = flag("BB_COMPILE_AGGRESSIVE");
+    const char* graphics_env = std::getenv("BB_GRAPHICS_SYNC");
+    synchronous_graphics = graphics_env && graphics_env[0] == '1';
     const char* env = std::getenv("BB_ASYNC_PIPELINES");
     async_pipelines = !(env && env[0] == '0');
     if (!async_pipelines) {
@@ -638,10 +681,16 @@ void PipelineCache::StartAsyncCompilers() {
     async_shaders = !(shaders_env && shaders_env[0] == '0');
     const char* compute_env = std::getenv("BB_ASYNC_COMPUTE");
     async_compute = async_shaders && !(compute_env && compute_env[0] == '0');
-    constexpr u32 NumCompilers = 2;
+    std::fprintf(stderr, "Compile mode: graphics=%s compute=%s shader_async=%d\n",
+                 synchronous_graphics ? "wait" : "async-skip",
+                 async_compute ? "async-skip" : "wait", int(async_shaders));
+    const char* count_env = std::getenv("BB_COMPILE_THREADS");
+    const u32 NumCompilers = BbCompile::WorkerCount(count_env ? count_env : "", std::thread::hardware_concurrency());
+    compile_report_time = std::chrono::steady_clock::now();
     for (u32 i = 0; i < NumCompilers; ++i) {
-        async_compilers.emplace_back([this](std::stop_token stop) {
+        async_compilers.emplace_back([this, NumCompilers](std::stop_token stop) {
             Common::SetCurrentThreadName("bb:PipelineCompile");
+            if (!aggressive_compile) Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
             Shader::Pools worker_pools; // the translator's pools are per thread
             for (;;) {
                 AsyncGraphicsJob job;
@@ -649,25 +698,71 @@ void PipelineCache::StartAsyncCompilers() {
                 std::optional<AsyncComputeJob> compute_job;
                 {
                     std::unique_lock lock{async_mutex};
-                    async_cv.wait(lock, [&] {
-                        return stop.stop_requested() || !async_jobs.empty() ||
-                               !async_shader_jobs.empty() || !async_compute_jobs.empty();
-                    });
+                    for (;;) {
+                        if (stop.stop_requested()) return;
+                        const auto pressure = BbCompile::ReadPressure();
+                        const auto budget = BbCompile::Budget(NumCompilers, pressure, aggressive_compile);
+                        const size_t queued = async_jobs.size() + async_shader_jobs.size() + async_compute_jobs.size();
+                        compile_queue_peak = std::max(compile_queue_peak, queued);
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now - compile_report_time >= std::chrono::seconds(5)) {
+                            std::fprintf(stderr, "Compile pool: workers=%u budget=%u active=%u queued=%zu peak_observed=%zu completed=%llu worker_ms_sum=%.1f cpu_system=%.1f free_ram_mib=%llu pressure_valid=%d\n",
+                                NumCompilers, budget, compile_active, queued, compile_queue_peak,
+                                static_cast<unsigned long long>(compile_completed), compile_worker_ms,
+                                pressure.cpu_percent, static_cast<unsigned long long>(pressure.available_mib), pressure.valid);
+                            compile_report_time = now;
+                            std::fprintf(stderr, "Compile queue: fair=%d aggressive=%d shaders_started=%llu graphics_started=%llu compute_started=%llu queue_ms_sum=%.1f queue_max_ms=%.1f\n",
+                                int(fair_compile_queue), int(aggressive_compile),
+                                (unsigned long long)compile_shader_started, (unsigned long long)compile_graphics_started,
+                                (unsigned long long)compile_compute_started, compile_queue_ms, compile_queue_max_ms);
+                        }
+                        if (queued && compile_active < budget) {
+                            ++compile_active;
+                            break;
+                        }
+                        async_cv.wait_for(lock, std::chrono::milliseconds(100));
+                    }
                     if (stop.stop_requested()) {
                         return;
                     }
-                    // Translations first: pipelines wait for them.
-                    if (!async_shader_jobs.empty()) {
+                    const auto kind = fair_compile_queue
+                        ? BbCompile::SelectFairJob(async_shader_jobs.size(), async_jobs.size(),
+                                                   async_compute_jobs.size(), compile_queue_cursor)
+                        : !async_shader_jobs.empty() ? BbCompile::JobKind::Shader
+                        : !async_compute_jobs.empty() ? BbCompile::JobKind::Compute
+                        : BbCompile::JobKind::Graphics;
+                    if (kind == BbCompile::JobKind::Shader) {
                         shader_job = std::move(async_shader_jobs.front());
                         async_shader_jobs.pop_front();
-                    } else if (!async_compute_jobs.empty()) {
+                        ++compile_shader_started;
+                    } else if (kind == BbCompile::JobKind::Compute) {
                         compute_job = std::move(async_compute_jobs.front());
                         async_compute_jobs.pop_front();
+                        ++compile_compute_started;
                     } else {
                         job = std::move(async_jobs.front());
                         async_jobs.pop_front();
+                        ++compile_graphics_started;
                     }
+                    const auto enqueued = shader_job ? shader_job->queued_at
+                        : compute_job ? compute_job->queued_at : job.queued_at;
+                    const double waited = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - enqueued).count();
+                    compile_queue_ms += waited;
+                    compile_queue_max_ms = std::max(compile_queue_max_ms, waited);
                 }
+                const auto job_start = std::chrono::steady_clock::now();
+                const auto finish_job = [this, job_start](void*) {
+                    {
+                        std::scoped_lock lock{async_mutex};
+                        --compile_active;
+                        ++compile_completed;
+                        compile_worker_ms += std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - job_start).count();
+                    }
+                    async_cv.notify_all();
+                };
+                std::unique_ptr<void, decltype(finish_job)> job_scope(this, finish_job);
                 if (compute_job) {
                     auto& cj = *compute_job;
                     AsyncComputeResult result{};
@@ -693,6 +788,7 @@ void PipelineCache::StartAsyncCompilers() {
                     const Shader::ShaderParams params{
                         .user_data = sj.user_data, .code = sj.code, .hash = sj.hash};
                     Shader::Info info(sj.hw_stage, sj.sw_stage, params);
+                    info.pgm_base = sj.pgm_base;
                     info.flatbuf_snapshot = &sj.flatbuf;
                     AsyncShaderResult result{};
                     {
@@ -702,8 +798,12 @@ void PipelineCache::StartAsyncCompilers() {
                         result.spv = Shader::Backend::SPIRV::EmitSPIRV(profile, sj.runtime_info,
                                                                        ir_program, sj.binding);
                         result.module = CompileSPV(result.spv, instance.GetDevice());
+                        if (sj.sw_stage == SwStage::Vertex)
+                            BbFaceDepth::Register(result.module, result.spv, sj.hash);
                     }
                     worker_pools.ReleaseContents();
+                    result.diag_ticket = sj.diag_ticket;
+                    BbSceneDiag::Event("shader_built", sj.diag_ticket, sj.hash);
                     result.program = sj.program;
                     result.spec = std::move(sj.spec);
                     {
@@ -734,6 +834,9 @@ void PipelineCache::StartAsyncCompilers() {
             }
         });
     }
+    std::printf("Compile admission: %s; fair=%d; CPU temperature unavailable; running jobs are not interrupted\n",
+        aggressive_compile ? "normal priority; RAM<768MiB:1; CPU>=95%:half workers" :
+                             "low priority; CPU>=85% or RAM<2048MiB:1", int(fair_compile_queue));
     std::printf("Pipelines: built on %u compile threads (BB_ASYNC_PIPELINES=0: on the GPU "
                 "thread)\n",
                 NumCompilers);
@@ -752,6 +855,7 @@ void PipelineCache::DrainAsyncPipelines() {
     }
     for (auto& result : shaders_done) {
         Program& program = *result.program;
+        BbSceneDiag::Event("shader_ready", result.diag_ticket, program.info.pgm_hash);
         auto& pending = program.pending_specs;
         if (const auto it = std::ranges::find_if(
                 pending, [&](const auto& spec) { return spec.SameCacheKey(result.spec); });
@@ -767,6 +871,7 @@ void PipelineCache::DrainAsyncPipelines() {
         program.AddPermut(result.module, std::move(result.spec));
     }
     for (auto& result : done) {
+        BbSceneDiag::Event("graphics_ready", std::hash<GraphicsPipelineKey>{}(result.key));
         async_pending.erase(result.key);
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(result.key);
         result.pipeline->storage_name =
@@ -775,6 +880,7 @@ void PipelineCache::DrainAsyncPipelines() {
         graphics_pipelines.try_emplace(result.key, std::move(result.pipeline));
     }
     for (auto& result : compute_done) {
+        BbSceneDiag::Event("compute_ready", result.key.value);
         async_compute_pending.erase(result.key);
         result.pipeline->storage_name = RegisterPipelineData(result.key, result.sdata);
         ++num_new_pipelines;
@@ -807,7 +913,9 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         DrainAsyncPipelines();
     }
     shader_pending = false;
+    BbSceneDiag::Poll();
     if (!RefreshComputeKey() || shader_pending) {
+        BbSceneDiag::Count(shader_pending ? BbSceneDiag::dispatch_shader : BbSceneDiag::invalid_key);
         shader_pending = false; // permutation translating on a compile thread: skipped
         return nullptr;
     }
@@ -819,6 +927,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         }
         // Not built yet: queue it once and skip this dispatch.
         if (async_compute_pending.insert(compute_key).second) {
+            BbSceneDiag::Event("compute_requested", compute_key.value, sel.infos[0]->pgm_hash);
             AsyncComputeJob job{};
             job.key = compute_key;
             job.snapshot = std::make_unique<Shader::Info>(*sel.infos[0]);
@@ -830,12 +939,14 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             }
             async_cv.notify_one();
         }
+        BbSceneDiag::Count(BbSceneDiag::dispatch_pipeline);
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
+        BbSceneDiag::Event("compute_requested", compute_key.value, sel.infos[0]->pgm_hash);
         CompileTimer timer;
 
         ComputePipeline::SerializationSupport sdata{};
@@ -843,6 +954,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
         it.value()->storage_name = RegisterPipelineData(compute_key, sdata);
+        BbSceneDiag::Event("compute_ready", compute_key.value);
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -1178,6 +1290,8 @@ bool PipelineCache::RefreshComputeKey() {
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding) {
+    const auto diag_ticket = BbSceneDiag::Ticket();
+    BbSceneDiag::Event("shader_sync_begin", diag_ticket, info.pgm_hash, u32(info.sw_stage));
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
@@ -1199,6 +1313,9 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     }
 
     const auto name = GetShaderName(info.hw_stage, info.pgm_hash, perm_idx);
+    if (info.sw_stage == SwStage::Vertex)
+        BbFaceDepth::Register(module, is_patched ? std::span<const u32>(*patch) :
+                                               std::span<const u32>(spv), info.pgm_hash);
     Vulkan::SetObjectName(instance.GetDevice(), module, name);
     if (EmulatorSettings.IsShaderCollect()) {
         DebugState.CollectShader(name, info.sw_stage, module, spv, code,
@@ -1206,6 +1323,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     }
     // bbport: stored by GetProgram once the specialization (content key) is known.
     last_spv = std::move(spv);
+    BbSceneDiag::Event("shader_sync_end", diag_ticket, info.pgm_hash, u32(info.sw_stage));
     return module;
 }
 
@@ -1239,6 +1357,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         }
         runtime_fault_recover = &recover;
         info.RefreshFlatBuf();
+        if (BbParticleSrt::Enabled()) BbParticleSrt::Normalize(info);
         auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
         runtime_fault_recover = nullptr;
         const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
@@ -1287,6 +1406,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
     info.RefreshFlatBuf();
+    if (BbParticleSrt::Enabled()) {
+        const auto normalized=BbParticleSrt::Normalize(info);
+        BbSceneDiag::ParticleSrt(info.pgm_hash,normalized.applied,normalized.active,
+                                normalized.inactive_images);
+    }
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
     size_t perm_idx = program->modules.size();
@@ -1307,18 +1431,21 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     if (it == program->modules.end() && async_shaders &&
         ((sw_stage == SwStage::Compute && AsyncComputeOn()) ||
          ((sw_stage == SwStage::Vertex || sw_stage == SwStage::Fragment) &&
-          !sel.regs->stage_enable.hs_en))) {
+          !sel.regs->stage_enable.hs_en && !synchronous_graphics))) {
         // bbport: translated on a compile thread; this draw is skipped (see AsyncShaderJob).
         shader_pending = true;
         if (std::ranges::find(program->pending_specs, spec) == program->pending_specs.end()) {
             AsyncShaderJob job{};
+            job.diag_ticket = BbSceneDiag::Ticket();
+            BbSceneDiag::Event("shader_requested", job.diag_ticket, params.hash, u32(sw_stage));
             job.program = program.get();
             job.spec = spec;
             job.hw_stage = hw_stage;
             job.sw_stage = sw_stage;
             std::ranges::copy(params.user_data, job.user_data.begin());
             job.flatbuf = info.flattened_ud_buf; // refreshed for this draw above
-            job.code = params.code;
+            job.code.assign(params.code.begin(), params.code.end());
+            job.pgm_base = params.Base();
             job.hash = params.hash;
             job.runtime_info = runtime_info;
             job.binding = binding;
@@ -1363,6 +1490,8 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
                 const auto& d = instance.GetDevice();
                 d.destroyShaderModule(m.module);
                 m.module = CompileSPV(spv_code, d);
+                if (program->info.sw_stage == SwStage::Vertex)
+                    BbFaceDepth::Register(m.module, spv_code, program->info.pgm_hash);
                 new_module = m.module;
             }
         }

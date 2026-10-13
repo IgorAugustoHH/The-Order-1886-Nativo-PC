@@ -6,6 +6,10 @@
 #include <algorithm>
 #include <bitset>
 #include <string>
+#include <type_traits>
+#include "bb_resource_audit.h"
+#include <fmt/format.h>
+#include <magic_enum/magic_enum.hpp>
 
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
@@ -100,6 +104,20 @@ struct StageSpecialization {
     StageSpecialization(const Info& info_, RuntimeInfo runtime_info_, const Profile& profile_,
                         Backend::Bindings start_)
         : info{&info_}, runtime_info{runtime_info_}, start{start_} {
+        if (BbResourceAudit::Enabled()) {
+            const auto signature = fmt::format("schema:{:x}:{}", info->pgm_hash, int(info->sw_stage));
+            if (!BbResourceAudit::AlreadySeen(signature)) {
+                BbResourceAudit::Write("resource_schema", fmt::format(
+                    "\"shader\":\"{:x}\",\"stage\":{},\"buffers\":{},\"images\":{},"
+                    "\"samplers\":{},\"fmasks\":{},\"flat_words\":{},"
+                    "\"walker_start\":{},\"walker_bytes\":{},\"contains_ir_graph\":false",
+                    info->pgm_hash, BbResourceAudit::Quote(magic_enum::enum_name(info->sw_stage)),
+                    info->buffers.size(), info->images.size(), info->samplers.size(),
+                    info->fmasks.size(), info->FlatUserData().size(),
+                    reinterpret_cast<uintptr_t>(info->srt_info.walker_func),
+                    info->srt_info.walker_func_size), signature);
+            }
+        }
         fetch_shader_data = Gcn::ParseFetchShader(info_);
         if (info_.sw_stage == SwStage::Vertex && fetch_shader_data) {
             // Specialize shader on VS input number types to follow spec.
@@ -187,11 +205,115 @@ struct StageSpecialization {
         return true;
     }
 
+    // First sample of each accepted/rejected resource origin. Includes cached shaders;
+    // only fresh translations have an IR graph. Reads the already flattened host buffer.
+    template <typename Desc, typename Sharp>
+    void AuditSharp(u32 slot, const Desc& desc, const Sharp& sharp, bool accepted) const {
+        if (!BbResourceAudit::Enabled()) return;
+        if constexpr (requires { desc.sharp_fetch; }) {
+            const char* kind = "sampler";
+            if constexpr (std::is_same_v<Sharp, AmdGpu::Buffer>) kind = "buffer";
+            if constexpr (std::is_same_v<Sharp, AmdGpu::Image>) kind = "image";
+            const char* reason = accepted ? "accepted" : "null_after_GetSharp";
+            if (!accepted && bool(sharp)) {
+                reason = "unmapped_address";
+                if constexpr (std::is_same_v<Sharp, AmdGpu::Image>) {
+                    const auto tile = sharp.GetTileMode();
+                    if (u32(tile) > u32(AmdGpu::TileMode::Thick3DXThick) &&
+                        tile != AmdGpu::TileMode::DisplayLinearGeneral)
+                        reason = "unsupported_tile_mode";
+                }
+            }
+            const auto& fetch = desc.sharp_fetch;
+            std::string origins, immediates;
+            for (size_t i = 0; i < fetch.N; ++i) {
+                if (i) { origins += ','; immediates += ','; }
+                origins += std::to_string(fetch.offsets[i]);
+                immediates += std::to_string(fetch.immediates[i]);
+            }
+            const auto signature = fmt::format("sharp:{:x}:{}:{}:{}:{}:{}:{}",
+                info->pgm_hash, int(info->sw_stage), kind, slot, reason, int(fetch.load_mask), origins);
+            if (BbResourceAudit::AlreadySeen(signature)) return;
+            size_t words = fetch.N;
+            if constexpr (requires { desc.is_r128; }) { if (desc.is_r128) words = 4; }
+            std::array<u32, sizeof(Sharp) / sizeof(u32)> raw{}, final{};
+            std::memcpy(final.data(), &sharp, sizeof(sharp));
+            bool can_fetch = true;
+            for (size_t i = 0; i < words; ++i) {
+                const bool loaded = fetch.load_mask & (1u << i);
+                if (fetch.offsets[i] == UNKNOWN_LOCATION ||
+                    (loaded && fetch.offsets[i] >= info->FlatUserData().size())) {
+                    can_fetch = false; break;
+                }
+                raw[i] = loaded ? info->FlatUserData()[fetch.offsets[i]] : fetch.immediates[i];
+            }
+            std::string raw_words, final_words;
+            for (size_t i = 0; i < fetch.N; ++i) {
+                if (i) { raw_words += ','; final_words += ','; }
+                raw_words += std::to_string(raw[i]); final_words += std::to_string(final[i]);
+            }
+            std::string extra;
+            if constexpr (requires { desc.buffer_type; })
+                extra += fmt::format(",\"buffer_type\":{}", BbResourceAudit::Quote(magic_enum::enum_name(desc.buffer_type)));
+            if constexpr (requires { desc.is_depth; })
+                extra += fmt::format(",\"is_depth\":{}", desc.is_depth);
+            if constexpr (std::is_same_v<Sharp, AmdGpu::Image>)
+                extra += fmt::format(",\"tile_mode\":{},\"image_type\":{},\"format\":{}",
+                    u32(sharp.GetTileMode()), u32(sharp.GetType()), u32(sharp.GetDataFmt()));
+            BbResourceAudit::Write("resource_sample", fmt::format(
+                "\"shader\":\"{:x}\",\"stage\":{},\"kind\":{},\"stage_slot\":{},"
+                "\"accepted\":{},\"reason\":{},\"first_sample\":true,"
+                "\"load_mask\":{},\"post_op\":{},\"offsets\":[{}],\"immediates\":[{}],"
+                "\"raw_fetch_valid\":{},\"raw_word_count\":{},\"raw_words\":[{}],\"final_words\":[{}]{}",
+                info->pgm_hash, BbResourceAudit::Quote(magic_enum::enum_name(info->sw_stage)),
+                BbResourceAudit::Quote(kind), slot, accepted, BbResourceAudit::Quote(reason),
+                int(fetch.load_mask), BbResourceAudit::Quote(magic_enum::enum_name(desc.post_op)),
+                origins, immediates, can_fetch, words, raw_words, final_words, extra), signature);
+        } else if constexpr (requires { desc.sharp_idx; }) {
+            const auto signature = fmt::format("fmask:{:x}:{}:{}:{}", info->pgm_hash,
+                int(info->sw_stage), slot, accepted);
+            if (BbResourceAudit::AlreadySeen(signature)) return;
+            std::array<u32, sizeof(Sharp) / sizeof(u32)> words{};
+            std::memcpy(words.data(), &sharp, sizeof(sharp));
+            std::string final_words;
+            for (const auto word : words) {
+                if (!final_words.empty()) final_words += ',';
+                final_words += std::to_string(word);
+            }
+            BbResourceAudit::Write("resource_sample", fmt::format(
+                "\"shader\":\"{:x}\",\"stage\":{},\"kind\":\"fmask\",\"stage_slot\":{},"
+                "\"accepted\":{},\"reason\":{},\"first_sample\":true,\"flat_offset\":{},"
+                "\"final_words\":[{}]", info->pgm_hash,
+                BbResourceAudit::Quote(magic_enum::enum_name(info->sw_stage)), slot, accepted,
+                BbResourceAudit::Quote(accepted ? "accepted" : "null_or_implausible"),
+                desc.sharp_idx, final_words), signature);
+        } else if constexpr (requires { desc.sgpr_base; desc.semantic; }) {
+            const auto signature = fmt::format("vertex:{:x}:{}:{}", info->pgm_hash, slot, accepted);
+            if (BbResourceAudit::AlreadySeen(signature)) return;
+            std::array<u32, sizeof(Sharp) / sizeof(u32)> words{};
+            std::memcpy(words.data(), &sharp, sizeof(sharp));
+            std::string final_words;
+            for (const auto word : words) {
+                if (!final_words.empty()) final_words += ',';
+                final_words += std::to_string(word);
+            }
+            BbResourceAudit::Write("resource_sample", fmt::format(
+                "\"shader\":\"{:x}\",\"stage\":{},\"kind\":\"vertex_buffer\",\"stage_slot\":{},"
+                "\"accepted\":{},\"reason\":{},\"first_sample\":true,\"sgpr_base\":{},"
+                "\"dword_offset\":{},\"semantic\":{},\"dest_vgpr\":{},\"final_words\":[{}]",
+                info->pgm_hash, BbResourceAudit::Quote(magic_enum::enum_name(info->sw_stage)),
+                slot, accepted, BbResourceAudit::Quote(accepted ? "accepted" : "null_or_implausible"),
+                desc.sgpr_base, desc.dword_offset, desc.semantic, desc.dest_vgpr, final_words), signature);
+        }
+    }
+
     void ForEachSharp(auto& spec_list, auto& desc_list, auto&& func) {
         for (const auto& desc : desc_list) {
             auto& spec = spec_list.emplace_back();
             const auto sharp = desc.GetSharp(*info);
-            if (!sharp || !Plausible(sharp)) {
+            const bool accepted = bool(sharp) && Plausible(sharp);
+            AuditSharp(u32(spec_list.size() - 1), desc, sharp, accepted);
+            if (!accepted) {
                 continue;
             }
             func(spec, desc, sharp);
@@ -202,7 +324,9 @@ struct StageSpecialization {
         for (const auto& desc : desc_list) {
             auto& spec = spec_list.emplace_back();
             const auto sharp = desc.GetSharp(*info);
-            if (!sharp || !Plausible(sharp)) {
+            const bool accepted = bool(sharp) && Plausible(sharp);
+            AuditSharp(binding, desc, sharp, accepted);
+            if (!accepted) {
                 binding++;
                 continue;
             }

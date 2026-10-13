@@ -21,10 +21,12 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/completed_writeback.h"
 #include "video_core/buffer_cache/deferred_readback_merge.h"
 #include "video_core/buffer_cache/memory_tracker.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -104,6 +106,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     // shaders wrote them, before any early copy could arrive (no fewer Finish waits).
     if (const char* env = std::getenv("BB_EARLY_WRITEBACK"); env && env[0] == '1') {
         early_writeback = true;
+    }
+    if (const char* env = std::getenv("BB_AIM_FOCUS_SYNC"); env && env[0] == '1') {
+        focus_sync_enabled = true;
     }
     // bbport: in run76 none of 18k write faults on GPU-modified pages touched GPU-written
     // bytes; each still waited for the whole GPU (Finish). Only with Relaxed readbacks: the
@@ -330,6 +335,13 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
 }
 
 void BufferCache::RecordWritebacks() {
+    const bool focus_only = ExclusiveFocusFeedback(focus_sync_enabled, early_writeback);
+    if (focus_only) {
+        std::scoped_lock lock{writeback_mutex};
+        // Feedback is small, but stalled GPUs must not grow an unlimited staging queue.
+        // Leave pending ranges to be snapshotted once completed batches make room.
+        if (writebacks.size() >= 64) return;
+    }
     std::vector<std::pair<VAddr, u64>> ranges;
     {
         std::scoped_lock lock{frame_written_mutex};
@@ -387,8 +399,21 @@ void BufferCache::RecordWritebacks() {
         runtime.CopyBuffer(arena, batch.staging.buffer, list);
     }
     batch.tick = scheduler.CurrentTick(); // signalled by the flush that follows
+    if (focus_only) {
+        batch.recorded_at = std::chrono::steady_clock::now();
+        batch.recorded_frame = BbStats::gpu_frames.load(std::memory_order_relaxed);
+    }
     std::scoped_lock lock{writeback_mutex};
     writebacks.push_back(std::move(batch));
+    if (focus_only) focus_latency.max_batches = std::max<u64>(focus_latency.max_batches, writebacks.size());
+}
+
+void BufferCache::PollFocusWritebacks() {
+    if (ExclusiveFocusFeedback(focus_sync_enabled, early_writeback)) ApplyWritebacks();
+}
+
+void BufferCache::RecordFocusWritebacks() {
+    if (ExclusiveFocusFeedback(focus_sync_enabled, early_writeback)) RecordWritebacks();
 }
 
 bool BufferCache::DeferReadback(const Buffer* arena, VAddr device_addr, u64 size) {
@@ -551,9 +576,13 @@ bool BufferCache::WrittenAgain(VAddr addr, u64 size) {
 }
 
 void BufferCache::ApplyWritebacks(VAddr wait_addr, u64 wait_size) {
-    if (!early_writeback) {
+    const bool focus_sync = focus_sync_enabled;
+    if (!early_writeback && !focus_sync) {
         return;
     }
+    // Without general early writebacks this queue contains only the strictly
+    // selected 1x1 focus-copy outputs. Do not relax resource freshness in mixed queues.
+    const bool feedback_only = ExclusiveFocusFeedback(focus_sync, early_writeback);
     std::scoped_lock lock{writeback_mutex};
     if (wait_size) {
         u64 needed = 0;
@@ -574,21 +603,73 @@ void BufferCache::ApplyWritebacks(VAddr wait_addr, u64 wait_size) {
         WritebackBatch batch = std::move(writebacks.front());
         writebacks.pop_front();
         batch.staging.buffer->Invalidate(batch.staging.offset, batch.staging.size);
+        bool delivered_batch = false;
+        const auto delivered_at = feedback_only ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
+        const double age_ms = feedback_only ? std::chrono::duration<double, std::milli>(
+            delivered_at - batch.recorded_at).count() : 0.0;
+        const u64 frame = BbStats::gpu_frames.load(std::memory_order_relaxed);
+        const u64 age_frames = frame >= batch.recorded_frame ? frame - batch.recorded_frame : 0;
         for (const auto& item : batch.items) {
             std::vector<std::pair<VAddr, VAddr>> still;
             gpu_modified_ranges.ForEachInRange(
                 item.addr, item.size, [&](VAddr start, VAddr end) { still.emplace_back(start, end); });
             for (const auto& [start, end] : still) {
-                if (WrittenAgain(start, end - start)) {
-                    continue; // a later write-back or on-demand readback brings it
+                const bool written_again = WrittenAgain(start, end - start);
+                if (!DeliverCompletedWritebackRange(feedback_only, written_again, start, end - start,
+                    batch.staging.mapped + item.staging_offset + (start - item.addr),
+                    [this](VAddr address, const u8* bytes, u64 size) {
+                        memory->TryWriteBacking(reinterpret_cast<void*>(address), bytes, size);
+                    },
+                    [this](VAddr address, u64 size) { gpu_modified_ranges.Subtract(address, size); })) {
+                    continue;
                 }
-                memory->TryWriteBacking(
-                    reinterpret_cast<void*>(start),
-                    batch.staging.mapped + item.staging_offset + (start - item.addr), end - start);
-                gpu_modified_ranges.Subtract(start, end - start);
+                delivered_batch = true;
+                if (focus_sync && !early_writeback && start == item.addr && end - start >= 4) {
+                    static u32 logged = 0;
+                    static u32 last_bits = 0;
+                    static auto last_log = std::chrono::steady_clock::time_point{};
+                    u32 bits;
+                    std::memcpy(&bits, batch.staging.mapped + item.staging_offset, sizeof(bits));
+                    const auto now = std::chrono::steady_clock::now();
+                    if (logged < 64 && (logged < 4 || now - last_log >= std::chrono::seconds(5) ||
+                        (bits != last_bits && now - last_log >= std::chrono::seconds(1)))) {
+                        ++logged;
+                        last_log = now;
+                        float value;
+                        std::memcpy(&value, batch.staging.mapped + item.staging_offset, sizeof(value));
+                        std::printf("Aim focus return: %#llx bytes %llu first_float %.9g tick %llu newer_pending %u age_ms %.3f age_frames %llu\n",
+                            static_cast<unsigned long long>(start),
+                            static_cast<unsigned long long>(end - start), value,
+                            static_cast<unsigned long long>(batch.tick), unsigned(written_again), age_ms,
+                            static_cast<unsigned long long>(age_frames));
+                    }
+                    last_bits = bits;
+                }
             }
         }
+        if (feedback_only && delivered_batch) {
+            ++focus_latency.samples;
+            focus_latency.ms_sum += age_ms;
+            focus_latency.max_ms = std::max(focus_latency.max_ms, age_ms);
+            focus_latency.frames_sum += age_frames;
+            focus_latency.max_frames = std::max(focus_latency.max_frames, age_frames);
+        }
         staging_pool.FreeDeferred(batch.staging);
+    }
+    if (feedback_only) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - focus_latency.window >= std::chrono::seconds(5)) {
+            const double count = std::max<u64>(1, focus_latency.samples);
+            std::printf("Aim focus latency: samples %llu record_to_publish_ms mean %.3f max %.3f frames_mean %.3f frames_max %llu pending_batches %llu max_batches %llu\n",
+                static_cast<unsigned long long>(focus_latency.samples), focus_latency.ms_sum / count,
+                focus_latency.max_ms, focus_latency.frames_sum / count,
+                static_cast<unsigned long long>(focus_latency.max_frames),
+                static_cast<unsigned long long>(writebacks.size()),
+                static_cast<unsigned long long>(focus_latency.max_batches));
+            focus_latency = {};
+            focus_latency.window = now;
+        }
     }
 }
 
@@ -675,7 +756,8 @@ void PrintBufferStats() {
 } // namespace
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
-                                                        bool is_written, bool is_texel_buffer) {
+                                                        bool is_written, bool is_texel_buffer,
+                                                        bool focus_copy) {
     // bbport: garbage V#s (shader resource tables the recompiler could not resolve, The Order:
     // 1886) ask for 2-4 GiB ranges; synchronizing them exhausts VRAM and system RAM. No real
     // PS4 buffer binding is that large: synchronize at most 256 MiB.
@@ -694,7 +776,18 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         NoteHotUse(device_addr, size);
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    // The Order's focus copy reads a rendered scalar image as an ordinary buffer.
+    // Only its caller opts in. Validate the image before using the image->buffer path.
+    const bool focus_image = focus_copy && !is_written && IsFocusCopySource(device_addr, size);
+    is_texel_buffer |= focus_image;
+    if (focus_image && Vulkan::FrameCapture::Active()) {
+        const auto id = texture_cache.FindImageFromRange(device_addr, size);
+        if (id) {
+            if (const auto path = Vulkan::FrameCapture::FocusScalarPath(texture_cache.GetImage(id).info, id.index);
+                !path.empty()) texture_cache.DumpFocusScalar(id, path);
+        }
+    }
+    if (!is_written && !focus_image && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
             ++region.stream_count;
@@ -727,6 +820,12 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     EnsureResident(arena, first_block, last_block);
     const u64 uploaded_before = BbStats::buffer_upload_bytes.load(std::memory_order_relaxed);
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
+    if (focus_image) {
+        static u32 logged = 0;
+        if (logged++ < 12)
+            std::printf("Aim focus copy: scalar source %#llx bytes %u image-to-buffer enabled\n",
+                        static_cast<unsigned long long>(device_addr), size);
+    }
     if (stats) {
         auto& region = Stats().regions[RegionKey(device_addr)];
         ++region.arena_count;
@@ -739,12 +838,24 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         // bbport: copied back at the end of the submission (RecordWritebacks); bigger
         // bindings are left to on-demand readbacks.
         constexpr u64 MaxWritebackRange = 4_MB;
-        if (early_writeback && size <= MaxWritebackRange) {
+        if ((early_writeback && size <= MaxWritebackRange) || (focus_copy && size <= 64_KB)) {
             std::scoped_lock lock{frame_written_mutex};
             frame_written.emplace_back(device_addr, size);
         }
     }
     return {arena, arena->Offset(device_addr)};
+}
+
+bool BufferCache::IsFocusCopySource(VAddr device_addr, u32 size) {
+    if (!device_addr || !size || size > 64_KB) return false;
+    const ImageId id = texture_cache.FindImageFromRange(device_addr, size);
+    if (!id) return false;
+    const auto& info = texture_cache.GetImage(id).info;
+    return info.guest_address == device_addr &&
+           info.pixel_format == vk::Format::eR32Sfloat &&
+           info.size.width == 1 && info.size.height == 1 && info.size.depth == 1 &&
+           info.num_samples == 1 && info.resources.levels == 1 &&
+           info.resources.layers == 1 && info.guest_size <= 64_KB;
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_addr, u32 size) {

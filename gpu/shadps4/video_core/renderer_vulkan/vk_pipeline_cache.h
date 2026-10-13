@@ -5,6 +5,7 @@
 
 #include <unordered_map>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -81,7 +82,6 @@ struct Program {
 struct DrawIndirectParams {
     u16 vertex_sgpr_offset;
     u32 instance_sgpr_offset;
-    bool is_indirect;
 };
 
 } // namespace Vulkan
@@ -250,6 +250,7 @@ private:
     /// time there). The job carries snapshots of the stages' Info: the GPU thread rewrites the
     /// live ones every draw.
     struct AsyncGraphicsJob {
+        std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
         GraphicsPipelineKey key{};
         std::array<std::unique_ptr<Shader::Info>, MaxShaderStages> snapshots{};
         std::array<const Shader::Info*, MaxShaderStages> live_infos{};
@@ -263,21 +264,25 @@ private:
         GraphicsPipeline::SerializationSupport sdata{};
     };
     /// A new permutation of a known graphics program, translated on a compile thread. The
-    /// user data is copied; the code is read from guest memory (its address is the program's
-    /// base for inline constants).
+    /// user data and code are owned copies; the original guest address is retained for inline
+    /// constants. A delayed job must not translate recycled guest program memory.
     struct AsyncShaderJob {
+        std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
+        u64 diag_ticket{};
         Program* program{};
         Shader::StageSpecialization spec{};
         Shader::HwStage hw_stage{};
         Shader::SwStage sw_stage{};
         std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data{};
         std::vector<u32> flatbuf; ///< the draw's flattened user data (see Info::flatbuf_snapshot)
-        std::span<const u32> code{};
+        std::vector<u32> code{}; ///< owned: guest memory can be recycled before compilation
+        VAddr pgm_base{}; ///< preserve guest address for inline constant-buffer fixups
         u64 hash{};
         Shader::RuntimeInfo runtime_info{};
         Shader::Backend::Bindings binding{};
     };
     struct AsyncShaderResult {
+        u64 diag_ticket{};
         Program* program{};
         Shader::StageSpecialization spec{};
         vk::ShaderModule module{};
@@ -288,6 +293,7 @@ private:
     /// permutation whenever its image types change: ~150 ms each, nearly all the stutters left
     /// in run77. The dispatch is skipped until it is built.
     struct AsyncComputeJob {
+        std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
         ComputePipelineKey key{};
         std::unique_ptr<Shader::Info> snapshot;
         const Shader::Info* live_info{};
@@ -310,12 +316,22 @@ private:
     void StartAsyncCompilers();
     void DrainAsyncPipelines();
     bool async_pipelines = false;
+    bool synchronous_graphics = false; ///< diagnostic: keep compute workers enabled
     std::mutex async_mutex;
     std::condition_variable async_cv;
     std::deque<AsyncGraphicsJob> async_jobs;        ///< guarded by async_mutex
     std::vector<AsyncGraphicsResult> async_done;    ///< guarded by async_mutex
     std::unordered_set<GraphicsPipelineKey> async_pending; ///< GPU thread only
     std::atomic<u32> async_done_count{0};
+    u32 compile_active = 0; // guarded by async_mutex
+    u64 compile_completed = 0;
+    double compile_worker_ms = 0;
+    size_t compile_queue_peak = 0;
+    bool fair_compile_queue = false, aggressive_compile = false;
+    unsigned compile_queue_cursor = 0;
+    double compile_queue_ms = 0, compile_queue_max_ms = 0;
+    u64 compile_shader_started = 0, compile_graphics_started = 0, compile_compute_started = 0;
+    std::chrono::steady_clock::time_point compile_report_time{};
     /// Last: stopped and joined before anything they use is destroyed.
     std::vector<std::jthread> async_compilers;
 };

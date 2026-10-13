@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <filesystem>
+#include "bb_face_depth_fix.h"
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
@@ -22,7 +26,7 @@
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 10u; // bbport: + upstream #5348 indirect ids, #5352 sharp pattern
-static constexpr u32 ShaderMetaVersion = 12u; // bbport: stored by content key
+static constexpr u32 ShaderMetaVersion = 13u; // SRT recovery ABI; older executables reject new readers
 static constexpr u32 PipelineKeyVersion = 6u; // bbport: stage hashes are content keys
 } // namespace Serialization
 
@@ -40,12 +44,13 @@ u64 ContentOf(u64 perm_hash) {
 
 /// Program hash, versions and the serialized specialization. Padding in the serialized
 /// structures can only make two sessions miss each other's entries, never mix them.
-u64 PermutationContentKey(u64 pgm_hash, const Shader::StageSpecialization& spec) {
+u64 PermutationContentKey(u64 pgm_hash, const Shader::StageSpecialization& spec, u32 reader_revision) {
     Serialization::Archive ar;
     spec.Serialize(ar);
     const auto bytes = ar.TakeOff();
     const u64 seed = pgm_hash ^ (u64{Serialization::ShaderMetaVersion} << 48) ^
-                     (u64{Serialization::ShaderBinaryVersion} << 32);
+                     (u64{Serialization::ShaderBinaryVersion} << 32) ^
+                     (u64{reader_revision} << 16);
     return XXH3_64bits_withSeed(bytes.data(), bytes.size(), seed) | 1; // never 0
 }
 } // namespace
@@ -125,7 +130,7 @@ u64 RegisterShaderMeta(const Shader::Info& info,
     if (!Storage::DataBase::Instance().IsOpened()) {
         return 0;
     }
-    const u64 content_key = PermutationContentKey(info.pgm_hash, spec);
+    const u64 content_key = PermutationContentKey(info.pgm_hash, spec, info.srt_info.reader_revision);
     NotePermutationContent(perm_hash, content_key);
 
     Serialization::Archive ar;
@@ -161,7 +166,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     u32 meta_version{};
     meta.Read(meta_version);
-    if (meta_version != Serialization::ShaderMetaVersion) {
+    if (meta_version != Serialization::ShaderMetaVersion && meta_version != 12u) {
         return false;
     }
 
@@ -176,7 +181,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     meta.Read(perm_idx);
 
     spec.Deserialize(ar);
-    info.Deserialize(ar);
+    if (!info.Deserialize(ar)) return false;
 
     // Motion vertex shaders embed session-local buffer device addresses. They must be
     // recompiled for the current allocation, never loaded from a previous process.
@@ -212,6 +217,9 @@ bool ComputePipeline::SerializationSupport::Deserialize(Serialization::Archive& 
 bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     compute_key.Deserialize(ar);
     const u64 name = compute_key.value; // content key, as stored
+    if (!PreloadPipeline(name, true)) {
+        return false;
+    }
 
     ComputePipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
@@ -232,13 +240,8 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     // bbport: stored with the content key; this session knows it by its own permutation hash.
     compute_key.value = local_perm_hash;
 
-    // bbport: the program and its permutation stay loaded; the pipeline itself only when a
-    // recent session used it (built on first use otherwise).
-    if (!PreloadPipeline(name, true)) {
-        sel.infos.fill(nullptr);
-        sel.modules.fill(nullptr);
-        return false;
-    }
+    // Eligibility was checked before loading metadata/modules to avoid retaining
+    // shaders for pipelines that are deferred to first use.
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
     if (is_new) {
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
@@ -293,15 +296,7 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     sel.graphics_key.Deserialize(ar);
     // Name as RegisterPipelineData stored it (the key with the stages' content keys).
     const u64 name = XXH3_64bits(&sel.graphics_key, sizeof(sel.graphics_key));
-
-    // bbport: motion-vector pipelines are never preloaded. Their vertex shader embeds session-
-    // local buffer addresses (see LoadShaderMeta), and the shader metadata is stored once per
-    // program, not per permutation: the meta found for a motion pipeline's stages could be the
-    // plain permutation, so LoadShaderMeta's motion check missed it and the preload built the
-    // 8-attachment motion key with plain shaders. The AMD driver refused some of these
-    // (ErrorUnknown: the startup crash), and the ones it accepted were registered under the
-    // motion key without motion output. Built at first use instead, like the vertex shaders.
-    if (sel.graphics_key.motion_vectors) {
+    if (!PreloadPipeline(name, false)) {
         return false;
     }
 
@@ -338,10 +333,6 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         hash = local_perm_hash;
     }
 
-    if (!PreloadPipeline(name, false)) {
-        reset();
-        return false;
-    }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         it.value() = std::make_unique<GraphicsPipeline>(
@@ -431,6 +422,8 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         module = target.modules[perm_idx].module;
     } else {
         module = CompileSPV(spv, instance.GetDevice());
+        if (target.info.sw_stage == Shader::SwStage::Vertex)
+            BbFaceDepth::Register(module, spv, pgm_hash);
         target.AddPermut(module, std::move(spec));
     }
     local_perm_hash = HashCombine(pgm_hash, perm_idx);
@@ -483,13 +476,33 @@ void PipelineCache::WarmUp() {
         return;
     }
 
+    LoadRecentPipelines();
+    // Diagnostic: keep the persistent cache open, but defer startup loading.
+    // Do not remove or clear any shader/driver cache files.
+    if (const char* preload = std::getenv("BB_PRELOAD_PIPELINES");
+        preload && preload[0] == '0') {
+        Storage::DataBase::Instance().FinishPreload();
+        std::fprintf(stderr, "Pipeline cache: startup preload bypassed (BB_PRELOAD_PIPELINES=0); persistent cache preserved\n");
+        std::fflush(stderr);
+        return;
+    }
     u32 num_pipelines{};
     u32 num_total_pipelines{};
-    LoadRecentPipelines();
+    const char* budget_env = std::getenv("BB_PRELOAD_BUDGET_MS");
+    const long budget_ms = budget_env ? std::max(0L, std::strtol(budget_env, nullptr, 10)) : 0;
+    const auto preload_begin = std::chrono::steady_clock::now();
+    u32 budget_deferred{};
 
     Storage::DataBase::Instance().ForEachBlob(
         Storage::BlobType::PipelineKey, [&](std::vector<u8>&& data) {
             ++num_total_pipelines;
+            // Admission budget only: an individual Vulkan call is not interrupted.
+            if (budget_ms && std::chrono::steady_clock::now() - preload_begin >=
+                                 std::chrono::milliseconds(budget_ms)) {
+                ++skipped_preloads;
+                ++budget_deferred;
+                return;
+            }
 
             Serialization::Archive ar{std::move(data)};
             Serialization::Reader pldata{ar};
@@ -515,6 +528,11 @@ void PipelineCache::WarmUp() {
             }
         });
 
+    std::fprintf(stderr, "Startup preload: built=%u scanned=%u budget_deferred=%u budget_ms=%ld elapsed_ms=%.1f\n",
+                 num_pipelines, num_total_pipelines, budget_deferred, budget_ms,
+                 std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - preload_begin).count());
+    std::fflush(stderr);
     LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
     std::printf("Pipeline cache: %u of %u pipelines built at start (used in the last sessions), "
                 "%u on first use\n",
@@ -672,6 +690,11 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     srt.Read(this, sizeof(*this));
 
     if (walker_func_size) {
+        // New field uses the old four padding bytes: archive layout stays compatible.
+        // Rebuild only legacy readers with permanent patches/unresolved zero slots;
+        // valid old readers and unrelated cache entries remain reusable.
+        if (reader_revision != SrtReaderRevision &&
+            !IsLegacySrtWalkerSafe(ar.CurrPtr(), walker_func_size)) return false;
         walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
         ar.Advance(walker_func_size);
     }
