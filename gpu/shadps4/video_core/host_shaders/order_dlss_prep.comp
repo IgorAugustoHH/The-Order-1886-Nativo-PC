@@ -45,7 +45,11 @@ void main() {
     }
     imageStore(color_out, p, vec4(sum / max(weight_sum, 1e-5), 1.0));
 
-    const vec4 v = texelFetch(velocity_tex, p, 0);
+    // The velocity target may be larger than the scene (the native one under reduced scenes).
+    const ivec2 velocity_size = textureSize(velocity_tex, 0);
+    const ivec2 vp = min(ivec2((vec2(p) + 0.5) * vec2(velocity_size) / vec2(size)),
+                         velocity_size - 1);
+    const vec4 v = texelFetch(velocity_tex, vp, 0);
     const uint signs = uint(3.0 * v.a);
     const float vx = -v.x * ((signs & 1u) != 0u ? -1.0 : 1.0);
     const float vy = v.y * ((signs & 2u) != 0u ? 1.0 : -1.0);

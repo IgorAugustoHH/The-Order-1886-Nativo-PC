@@ -1684,6 +1684,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         runtime.FlushBarriers();
     }
 
+    if (scene_debug_frame && order_dlss->SceneOpen()) {
+        std::printf("Scene compute: cs %08llx%s\n", (unsigned long long)cs.pgm_hash,
+                    OrderDlss::IsResolve(cs.pgm_hash) ? " (temporal resolve: scene closes)" : "");
+    }
     // bbport (The Order): DLSS in place of the temporal MSAA resolve (docs/order_dlss.md).
     if (order_dlss->Enabled() && OrderDlss::IsResolve(cs.pgm_hash) &&
         order_dlss->Replace(bound_images, cs.FlatUserData())) {
@@ -3265,14 +3269,21 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     // bbport (The Order): the reduced scene opens at the first pass drawing the MSAA scene
     // depth and closes at the temporal resolve (OrderDlss); MSAA targets have proxies there.
     if (order_dlss->Scaling() && db_desc.first && key.num_samples > 1 &&
-        scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first))) {
+        scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first)) &&
+        !order_dlss->SceneOpen()) {
         order_dlss->OpenScene();
+        // BB_SCENE_DEBUG=<file>: once the file exists, this reduced scene logs every pass and
+        // every proxy copy (the Bloodborne frame start that arms it does not run here).
+        static const char* order_scene_debug = std::getenv("BB_SCENE_DEBUG");
+        scene_debug_frame = order_scene_debug && std::remove(order_scene_debug) == 0;
+        scene_targets->debug = scene_debug_frame;
+        if (scene_debug_frame) std::printf("Scene debug: The Order reduced scene opened\n");
     }
     bool reduced = order_dlss->SceneOpen() ||
                    (scene_started && upscaler->RasterScaling() && key.num_samples == 1);
     // BB_SCENE_DEBUG=<file>: once the file exists, why the passes of one frame keep the
     // native size (see NoteFrameStart).
-    const bool debug_pass = scene_debug_frame && scene_started;
+    const bool debug_pass = scene_debug_frame && (scene_started || order_dlss->SceneOpen());
     std::string why;
     if (debug_pass) {
         why = fmt::format("pass vs {:08x} ps {:08x} mrt {:#x} samples {} raster_scaling {}:",
@@ -3298,6 +3309,9 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         if (id) {
             const auto& image = texture_cache.GetImage(id);
             // Mip levels of eligible chains have their own proxies (SceneTargets::Get).
+            // The Order: a single-sample target drawn at 2x gets a 2x proxy (MsResample copies).
+            if (order_dlss->SceneOpen() && key.color_samples[cb] > 1 &&
+                !scene_targets->MsCopyable(image.backing->image.image_ci.format)) reduced = false;
             if (!scene_targets->Eligible(image) || image.binding.is_bound ||
                 image.binding.needs_rebind || desc.view_info.range.base.layer ||
                 !same_size(image, desc.view_info.range.base.level)) reduced = false;
@@ -3347,7 +3361,11 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             image = &texture_cache.GetImage(image_id);
         }
         texture_cache.UpdateImage(image_id);
-        runtime.SetBackingSamples(image, key.color_samples[cb]);
+        // The Order's reduced scene: the proxy takes the pass's sample count (Attachment); the
+        // native image keeps the game's, so it never needs a multisampled copy.
+        const bool order_reduced = reduced && order_dlss->SceneOpen();
+        runtime.SetBackingSamples(image, order_reduced ? image->info.num_samples
+                                                       : key.color_samples[cb]);
         const auto& image_view = texture_cache.FindRenderTarget(image_id, desc);
         const auto slice = image_view.info.range.base.layer;
         const auto mip = image_view.info.range.base.level;
@@ -3392,7 +3410,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         attachment.is_clear = is_clear;
 
         if (reduced) {
-            const auto target = scene_targets->Attachment(image_id, desc.view_info);
+            const auto target = scene_targets->Attachment(
+                image_id, desc.view_info, order_reduced ? u32(key.color_samples[cb]) : 0u);
             attachment.image_view = target.view;
             attachment.image_layout = target.layout;
         }

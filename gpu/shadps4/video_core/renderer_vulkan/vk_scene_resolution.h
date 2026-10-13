@@ -40,7 +40,11 @@ public:
         vk::ImageLayout layout;
         vk::ImageUsageFlags usage;
     };
-    Target Attachment(VideoCore::ImageId, const VideoCore::ImageViewInfo&);
+    /// samples: the pass's sample count for this attachment (The Order draws single-sample
+    /// targets in 2x MSAA passes); 0 keeps the image's.
+    Target Attachment(VideoCore::ImageId, const VideoCore::ImageViewInfo&, u32 samples = 0);
+    /// A multisampled proxy (or a proxy of a multisampled image) can be copied by MsResample.
+    [[nodiscard]] bool MsCopyable(vk::Format format) const;
     Target Read(VideoCore::ImageId, const VideoCore::ImageViewInfo&,
                 vk::PipelineStageFlags2 = vk::PipelineStageFlagBits2::eComputeShader,
                 vk::AccessFlags2 = vk::AccessFlagBits2::eShaderRead);
@@ -77,12 +81,13 @@ private:
         VideoCore::UniqueImage image;
         std::vector<std::pair<VideoCore::ImageViewInfo, vk::UniqueImageView>> views;
         vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+        u32 samples = 1; ///< the proxy's sample count
         SceneResolution::Coherence state;
     };
     static constexpr u64 Key(u64 uid, u32 level) {
         return uid << 4 | level;
     }
-    Entry& Get(VideoCore::ImageId, u32 level = 0);
+    Entry& Get(VideoCore::ImageId, u32 level = 0, u32 samples = 0);
     vk::ImageView View(Entry&, const VideoCore::Image&, const VideoCore::ImageViewInfo&);
     void Copy(Entry&, VideoCore::Image&, bool to_native);
     // Depth/stencil formats without blit support (D32S8 on RADV) are resampled by a
@@ -93,9 +98,9 @@ private:
     void Resample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
                   vk::Extent2D dst_size);
     vk::Pipeline ResamplePipeline(vk::Format, bool stencil);
-    void MsResample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
-                    vk::Extent2D dst_size);
-    vk::Pipeline MsResamplePipeline(vk::Format, bool depth, u32 samples);
+    void MsResample(vk::Image src, u32 src_samples, vk::Image dst, u32 dst_samples,
+                    const VideoCore::Image& original, vk::Extent2D dst_size);
+    vk::Pipeline MsResamplePipeline(vk::Format, u32 kind, bool src_ms, u32 dst_samples);
     void CreateResampleResources();
     void Transition(Entry&, vk::ImageAspectFlags, vk::ImageLayout,
                     vk::PipelineStageFlags2, vk::AccessFlags2);
@@ -118,7 +123,8 @@ private:
     vk::UniqueDescriptorSetLayout resample_set_layout;
     vk::UniquePipelineLayout resample_layout;
     std::vector<std::pair<std::pair<vk::Format, bool>, vk::UniquePipeline>> resample_pipelines;
-    vk::UniqueShaderModule ms_depth_frag, ms_color_frag;
-    std::vector<std::pair<std::tuple<vk::Format, bool, u32>, vk::UniquePipeline>> ms_pipelines;
+    /// [kind: 0 float color, 1 uint color, 2 depth][source multisampled]
+    std::array<std::array<vk::UniqueShaderModule, 2>, 3> ms_frags;
+    std::vector<std::pair<std::tuple<vk::Format, u32, bool, u32>, vk::UniquePipeline>> ms_pipelines;
 };
 } // namespace Vulkan

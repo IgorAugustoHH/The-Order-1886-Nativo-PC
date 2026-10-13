@@ -266,6 +266,18 @@ bool TemporalUpscaler::RasterScaling() const {
 }
 
 bool TemporalUpscaler::OnFrameStart() {
+    auto& status = BbSettings::Get();
+    if (dispatched_last_frame) status.temporal_status = "Reconstrução gravada no quadro anterior";
+    else if (!Active()) status.temporal_status = "Reconstrução temporal desativada";
+    else if (!diagnostic_trigger_frame) status.temporal_status = "Aguardando o passe de reconstrução do jogo";
+    diagnostic_trigger_frame = false;
+    if (++diagnostic_frames % 300 == 0) {
+        std::printf("Upscaler diagnostics: provider=%s frames=%llu trigger_hits=%llu recorded=%llu spatial_recorded=%llu status=%s\n",
+                    BbSettings::UpscalerName(status.upscaler),
+                    static_cast<unsigned long long>(diagnostic_frames),
+                    static_cast<unsigned long long>(diagnostic_triggers),
+                    status.temporal_recorded.load(), status.spatial_recorded.load(), status.temporal_status.load());
+    }
     // bbport: BB_PRESET_FILE=<file> holding a preset number, read about once a second: switches
     // the preset like the menu does (scripted tests of live preset changes).
     static const char* preset_file = std::getenv("BB_PRESET_FILE");
@@ -358,6 +370,13 @@ bool TemporalUpscaler::OnFrameStart() {
 }
 
 void TemporalUpscaler::OnDispatch(u64 cs_hash) {
+    if (cs_hash == trigger_hash) {
+        ++diagnostic_triggers;
+        diagnostic_trigger_frame = true;
+        BbSettings::Get().temporal_status = !scene_color ? "Passe encontrado; cor da cena ausente"
+            : !camera_motion.Ready() ? "Passe encontrado; câmera ou profundidade ausente"
+            : "Entradas encontradas; aguardando gravar a reconstrução";
+    }
     if (cs_hash != trigger_hash || done_this_frame || failed || Scaled()) {
         return;
     }
@@ -1167,6 +1186,7 @@ void TemporalUpscaler::Run() {
     if (dispatched) {
         reset = false;
         dispatched_last_frame = true;
+        ++BbSettings::Get().temporal_recorded;
         if (BbSettings::Get().upscaler != BbSettings::UpscalerTaa) {
             ExtraSharpen(cmdbuf, vk::Image(output_image), false, ow, oh);
         }
@@ -1661,6 +1681,7 @@ void TemporalUpscaler::RunScaled() {
                     vk::PipelineStageFlagBits2::eColorAttachmentOutput, color_access);
             reset = false;
             dispatched_last_frame = true;
+            ++BbSettings::Get().temporal_recorded;
             if (const int dump = DumpFrame(); dump >= 0) {
                 DumpImages(instance, scheduler, cmdbuf, dump,
                            {{color_image, source_width, source_height, 4, "input", "rgba"},
@@ -1752,6 +1773,7 @@ void TemporalUpscaler::RunScaled() {
         ok = true;
         reset = false;
         dispatched_last_frame = true;
+        ++BbSettings::Get().temporal_recorded;
         ExtraSharpen(cmdbuf, vk::Image(ui_image), true, ow, oh);
     }
     barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eGeneral, all,

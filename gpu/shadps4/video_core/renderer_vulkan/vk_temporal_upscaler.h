@@ -192,6 +192,8 @@ private:
 
 
     bool enabled = false;
+    u64 diagnostic_frames = 0, diagnostic_triggers = 0;
+    bool diagnostic_trigger_frame = false;
     bool failed = false;
     u64 trigger_hash = 0x9a9cf8a9;
     VideoCore::ImageId scene_color{};

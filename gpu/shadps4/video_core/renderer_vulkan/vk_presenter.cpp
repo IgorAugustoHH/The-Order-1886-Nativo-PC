@@ -13,6 +13,7 @@
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "bbport_overlay.h"
+#include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -451,8 +452,24 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
+    auto present_fsr = fsr_settings;
+    static const bool order_options = [] {
+        const char* value = std::getenv("BB_ORDER_LIVE_OPTIONS");
+        return value && value[0] == '1';
+    }();
+    if (order_options) {
+        present_fsr.enable = BbSettings::Get().spatial_fsr1;
+        present_fsr.use_rcas = BbSettings::Get().sharpen;
+        present_fsr.rcas_attenuation = 2.0f - std::clamp(BbSettings::Get().sharpness.load(), 0.0f, 2.0f);
+    }
+    const auto original_view = image_view;
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
-                                 fsr_settings, frame->is_hdr);
+                                 present_fsr, frame->is_hdr);
+    if (order_options) {
+        const bool recorded = image_view != original_view;
+        BbSettings::Get().spatial_active = recorded;
+        if (recorded) ++BbSettings::Get().spatial_recorded;
+    }
 
     // Vulkan has no sRGB variant of the 10-bit format, so an A2R10G10B10Srgb buffer reaches
     // the post process pass still sRGB encoded and has to be decoded there instead.
@@ -775,9 +792,26 @@ Frame* Presenter::GetRenderFrame() {
         }
     }
 
-    if (frame->width != expected_frame_width || frame->height != expected_frame_height ||
+    u32 desired_width = expected_frame_width, desired_height = expected_frame_height;
+    static const bool order_options = [] {
+        const char* value = std::getenv("BB_ORDER_LIVE_OPTIONS");
+        return value && value[0] == '1';
+    }();
+    if (order_options) {
+        const int output = std::clamp(BbSettings::Get().output_res.load(), 0, BbSettings::OutputCount - 1);
+        desired_width = BbSettings::OutputWidths[output];
+        desired_height = BbSettings::OutputHeights[output];
+        if (output != order_output) {
+            // FSR1 intermediate images may be used by other frames. Retire all draw work
+            // before their resize; per-frame images retain their existing present fences.
+            draw_scheduler.Finish();
+            order_output = output;
+            std::printf("Order output: %ux%u live presentation; guest scene unchanged\n", desired_width, desired_height);
+        }
+    }
+    if (frame->width != desired_width || frame->height != desired_height ||
         frame->is_hdr != swapchain.GetHDR()) {
-        RecreateFrame(frame, expected_frame_width, expected_frame_height);
+        RecreateFrame(frame, desired_width, desired_height);
     }
 
     return frame;

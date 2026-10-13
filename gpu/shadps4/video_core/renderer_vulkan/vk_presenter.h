@@ -136,6 +136,7 @@ private:
     std::condition_variable free_cv;
     std::condition_variable_any frame_cv;
     std::vector<VAddr> vo_buffers_addr;
+    int order_output = -1;
 };
 
 } // namespace Vulkan

@@ -26,26 +26,26 @@ struct Effect {
     bool default_on;
 };
 inline constexpr Effect Effects[] = {
-    {"effect_chromatic_aberration", "Хроматическая аберрация", true},
-    {"effect_dof", "Глубина резкости (DoF)", true},
-    {"effect_motion_blur", "Размытие в движении", true},
-    {"effect_ssao", "Затенение SSAO", true},
-    {"effect_game_aa", "Собственное сглаживание игры", true},
-    {"effect_dynamic_shadows", "Тени от динамических источников", true},
-    {"effect_ssr", "Отражения SSR (не было в игре)", false},
-    {"skip_intro", "Пропуск заставок при запуске", false},
-    {"debug_camera", "Свободная камера (Cross + L3)", false},
-    {"debug_menu", "Debug menu (нужны файлы шрифтов)", false},
-    {"cheat_no_death", "Чит: бессмертие (не ниже 1 HP)", false},
-    {"cheat_stealth", "Чит: враги не замечают", false},
-    {"cheat_silent", "Чит: враги не слышат", false},
-    {"cheat_rally_no_decay", "Чит: Rally не угасает", false},
-    {"cheat_enemy_control", "Чит: управление врагом (R3 / L3)", false},
-    {"tweak_no_rally", "Без Rally (возврата HP)", false},
-    {"tweak_camera_distance", "Камера дальше", false},
-    {"tweak_no_camera_rotation", "Без автоповорота камеры", false},
-    {"tweak_easy_run", "Бег с меньшим наклоном стика", false},
-    {"tweak_ragdoll", "Физика тел как в Dark Souls", false},
+    {"effect_chromatic_aberration", "Aberração cromática", true},
+    {"effect_dof", "Profundidade de campo (DoF)", true},
+    {"effect_motion_blur", "Desfoque de movimento", true},
+    {"effect_ssao", "Oclusão ambiente (SSAO)", true},
+    {"effect_game_aa", "Suavização original do jogo", true},
+    {"effect_dynamic_shadows", "Sombras de luzes dinâmicas", true},
+    {"effect_ssr", "Reflexos SSR (adicionais)", false},
+    {"skip_intro", "Pular vídeos de abertura", false},
+    {"debug_camera", "Câmera livre (X + L3)", false},
+    {"debug_menu", "Menu de diagnóstico (requer fontes adicionais)", false},
+    {"cheat_no_death", "Truque: imortalidade (mínimo de 1 HP)", false},
+    {"cheat_stealth", "Truque: invisível para inimigos", false},
+    {"cheat_silent", "Truque: inimigos não ouvem", false},
+    {"cheat_rally_no_decay", "Truque: recuperação Rally sem expirar", false},
+    {"cheat_enemy_control", "Truque: controlar inimigo (R3 / L3)", false},
+    {"tweak_no_rally", "Desativar recuperação Rally", false},
+    {"tweak_camera_distance", "Afastar câmera", false},
+    {"tweak_no_camera_rotation", "Desativar rotação automática da câmera", false},
+    {"tweak_easy_run", "Correr com menor inclinação do analógico", false},
+    {"tweak_ragdoll", "Física de corpos semelhante a Dark Souls", false},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 /// Live output resolutions: the upscaler's output and the UI host targets.
@@ -67,6 +67,11 @@ struct Values {
     std::atomic<float> reactive_max{0.9f};
     std::atomic<int> debug_view{DebugNone};
     std::atomic<bool> show_fps{false};
+    // Order experimental menu: distinguish provider selection from recorded GPU work.
+    std::atomic<bool> spatial_fsr1{false};
+    std::atomic<bool> spatial_active{false};
+    std::atomic<unsigned long long> temporal_recorded{0}, spatial_recorded{0};
+    std::atomic<const char*> temporal_status{"Aguardando o primeiro quadro"};
     /// bbport: the present thread's current frame limit (F9 changes it), shown by the counter.
     std::atomic<unsigned> frame_limit{0};
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.

@@ -10,7 +10,11 @@
 #include "video_core/host_shaders/depth_stencil_bits_frag.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/host_shaders/ms_resample_color_frag.h"
+#include "video_core/host_shaders/ms_resample_color_ms_frag.h"
 #include "video_core/host_shaders/ms_resample_depth_frag.h"
+#include "video_core/host_shaders/ms_resample_depth_ms_frag.h"
+#include "video_core/host_shaders/ms_resample_uint_frag.h"
+#include "video_core/host_shaders/ms_resample_uint_ms_frag.h"
 #include "bbport_toggles.h"
 #include <cstdio>
 #include <cstdlib>
@@ -83,18 +87,16 @@ static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scen
 bool SceneTargets::Eligible(const VideoCore::Image& image) const {
     const auto& i = image.info;
     const u32 div = SizeDivisor(i, size);
+    // The Order (allow_msaa): a single-sample image may currently have a multisampled backing
+    // (drawn in a 2x pass); its proxy takes the pass's sample count instead (Attachment).
     if (!div || i.size.depth != 1 || i.resources.layers != 1 || i.props.is_block ||
-        !image.backing || image.backing->num_samples != i.num_samples) {
+        !image.backing || (!allow_msaa && image.backing->num_samples != i.num_samples)) {
         return false;
     }
     if (i.num_samples != 1) {
-        // The Order: 2x MSAA scene targets, copied by MsResample (float/unorm color, D32).
-        const auto format = image.backing->image.image_ci.format;
+        // The Order: 2x MSAA scene targets, copied by MsResample.
         return allow_msaa && div == 1 && i.resources.levels == 1 &&
-               (i.props.is_depth ? format == vk::Format::eD32Sfloat
-                                 : format == vk::Format::eR16G16B16A16Sfloat ||
-                                       format == vk::Format::eA2B10G10R10UnormPack32 ||
-                                       format == vk::Format::eR8G8B8A8Unorm);
+               MsCopyable(image.backing->image.image_ci.format);
     }
     if (i.resources.levels != 1) {
         // Mip chains (the bloom pyramid at half resolution): one blitted proxy per level.
@@ -102,6 +104,22 @@ bool SceneTargets::Eligible(const VideoCore::Image& image) const {
                Blittable(image.backing->image.image_ci.format);
     }
     return Blittable(image.backing->image.image_ci.format) || ShaderResampled(image);
+}
+bool SceneTargets::MsCopyable(vk::Format format) const {
+    switch (format) {
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eR16G16B16A16Sfloat:
+    case vk::Format::eA2B10G10R10UnormPack32:
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8Unorm:
+    case vk::Format::eR8Unorm:
+    case vk::Format::eR16G16Sfloat:
+    case vk::Format::eB10G11R11UfloatPack32:
+    case vk::Format::eR16Uint:
+        return true;
+    default:
+        return false;
+    }
 }
 bool SceneTargets::EligibleScene(const VideoCore::Image& image) const {
     return image.info.size.width == 1920 && image.info.size.height == 1080 && Eligible(image);
@@ -159,6 +177,9 @@ void SceneTargets::Transition(Entry& e, vk::ImageAspectFlags aspect, vk::ImageLa
     });
     e.layout = layout;
 }
+static u32 image_samples(const VideoCore::Image& image) {
+    return image.backing ? image.backing->num_samples : 1;
+}
 void SceneTargets::Copy(Entry& e, VideoCore::Image& original, bool to_native) {
     copying = true;
     scheduler.EndRendering();
@@ -169,9 +190,14 @@ void SceneTargets::Copy(Entry& e, VideoCore::Image& original, bool to_native) {
                     vk::to_string(original.info.pixel_format).c_str(), original.info.size.width,
                     original.info.size.height, e.level);
     }
+    // The Order: the native image is copied at the game's own sample count (a single-sample
+    // target may have a multisampled backing from a native 2x pass).
+    if (allow_msaa && image_samples(original) != original.info.num_samples) {
+        runtime.SetBackingSamples(&original, original.info.num_samples, !to_native);
+    }
     const vk::Image src = to_native ? vk::Image(e.image) : original.GetImage();
     const vk::Image dst = to_native ? original.GetImage() : vk::Image(e.image);
-    if (original.info.num_samples > 1) {
+    if (original.info.num_samples > 1 || e.samples > 1) {
         const bool depth = original.info.props.is_depth;
         constexpr auto read_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
         const auto write_layout = depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
@@ -190,7 +216,9 @@ void SceneTargets::Copy(Entry& e, VideoCore::Image& original, bool to_native) {
         Transition(e, original.aspect_mask, to_native ? read_layout : write_layout,
                    to_native ? read_stage : write_stage, to_native ? read_access : write_access);
         const auto& proxy = e.image.image_ci.extent;
-        MsResample(src, dst, original,
+        const u32 native_samples = original.info.num_samples;
+        MsResample(src, to_native ? e.samples : native_samples, dst,
+                   to_native ? native_samples : e.samples, original,
                    to_native ? vk::Extent2D{original.info.size.width, original.info.size.height}
                              : vk::Extent2D{proxy.width, proxy.height});
         if (to_native) e.state.Resolved(); else e.state.CopiedToProxy();
@@ -339,8 +367,15 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
 void SceneTargets::CreateResampleResources() {
     const auto device = instance.GetDevice();
     fs_tri_vert = vk::UniqueShaderModule(CompileSPV(FS_TRI_VERT, device), device);
-    ms_depth_frag = vk::UniqueShaderModule(CompileSPV(MS_RESAMPLE_DEPTH_FRAG, device), device);
-    ms_color_frag = vk::UniqueShaderModule(CompileSPV(MS_RESAMPLE_COLOR_FRAG, device), device);
+    const auto module = [&](const auto& code) {
+        return vk::UniqueShaderModule(CompileSPV(code, device), device);
+    };
+    ms_frags[0][0] = module(MS_RESAMPLE_COLOR_FRAG);
+    ms_frags[0][1] = module(MS_RESAMPLE_COLOR_MS_FRAG);
+    ms_frags[1][0] = module(MS_RESAMPLE_UINT_FRAG);
+    ms_frags[1][1] = module(MS_RESAMPLE_UINT_MS_FRAG);
+    ms_frags[2][0] = module(MS_RESAMPLE_DEPTH_FRAG);
+    ms_frags[2][1] = module(MS_RESAMPLE_DEPTH_MS_FRAG);
     depth_frag = vk::UniqueShaderModule(CompileSPV(DEPTH_RESAMPLE_FRAG, device), device);
     if (instance.IsShaderStencilExportSupported() && !force_stencil_bits) {
         depth_stencil_frag =
@@ -423,8 +458,8 @@ vk::Pipeline SceneTargets::ResamplePipeline(vk::Format format, bool stencil) {
     resample_pipelines.emplace_back(key, std::move(pipeline));
     return result;
 }
-void SceneTargets::MsResample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
-                              vk::Extent2D dst_size) {
+void SceneTargets::MsResample(vk::Image src, u32 src_samples, vk::Image dst, u32 dst_samples,
+                              const VideoCore::Image& original, vk::Extent2D dst_size) {
     const auto device = instance.GetDevice();
     const auto format = original.backing->image.image_ci.format;
     const bool depth = original.info.props.is_depth;
@@ -444,7 +479,8 @@ void SceneTargets::MsResample(vk::Image src, vk::Image dst, const VideoCore::Ima
         device.destroyImageView(source_view);
         device.destroyImageView(target_view);
     });
-    const auto pipeline = MsResamplePipeline(format, depth, original.info.num_samples);
+    const u32 kind = depth ? 2u : format == vk::Format::eR16Uint ? 1u : 0u;
+    const auto pipeline = MsResamplePipeline(format, kind, src_samples > 1, dst_samples);
     const auto layout = *resample_layout;
     scheduler.Record([=](vk::CommandBuffer cmd) {
         const vk::RenderingAttachmentInfo attachment{
@@ -476,8 +512,10 @@ void SceneTargets::MsResample(vk::Image src, vk::Image dst, const VideoCore::Ima
     });
     scheduler.GetDynamicState().Invalidate();
 }
-vk::Pipeline SceneTargets::MsResamplePipeline(vk::Format format, bool depth, u32 samples) {
-    const std::tuple key{format, depth, samples};
+vk::Pipeline SceneTargets::MsResamplePipeline(vk::Format format, u32 kind, bool src_ms,
+                                              u32 samples) {
+    const bool depth = kind == 2;
+    const std::tuple key{format, kind, src_ms, samples};
     for (const auto& [k, pipeline] : ms_pipelines) if (k == key) return *pipeline;
     const vk::PipelineInputAssemblyStateCreateInfo input_assembly{
         .topology = vk::PrimitiveTopology::eTriangleList,
@@ -500,7 +538,7 @@ vk::Pipeline SceneTargets::MsResamplePipeline(vk::Format format, bool depth, u32
         vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eVertex,
                                           .module = *fs_tri_vert, .pName = "main"},
         vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eFragment,
-                                          .module = depth ? *ms_depth_frag : *ms_color_frag,
+                                          .module = *ms_frags[kind][src_ms ? 1 : 0],
                                           .pName = "main"},
     };
     const vk::PipelineRenderingCreateInfo rendering{
@@ -530,7 +568,7 @@ vk::Pipeline SceneTargets::MsResamplePipeline(vk::Format format, bool depth, u32
     ms_pipelines.emplace_back(key, std::move(pipeline));
     return result;
 }
-SceneTargets::Entry& SceneTargets::Get(VideoCore::ImageId id, u32 level) {
+SceneTargets::Entry& SceneTargets::Get(VideoCore::ImageId id, u32 level, u32 samples) {
     auto& original = *lookup(id, 0);
     const u64 key = Key(original.image_uid, level);
     // A draw has up to six targets, mostly the same as the previous draw's.
@@ -553,6 +591,14 @@ SceneTargets::Entry& SceneTargets::Get(VideoCore::ImageId id, u32 level) {
         const auto proxy = ProxySize(original, level);
         ci.extent = vk::Extent3D{proxy.width, proxy.height, 1};
         ci.mipLevels = 1;
+        if (allow_msaa) {
+            // The Order: the pass's sample count, else the game's (not a 2x backing's).
+            entry->samples = samples ? samples : original.info.num_samples;
+            ci.samples = vk::SampleCountFlagBits(entry->samples);
+            if (entry->samples > 1) {
+                ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
+            }
+        }
         entry->image.Create(ci);
         tracked.insert(original.image_uid);
     }
@@ -576,9 +622,9 @@ vk::ImageView SceneTargets::View(Entry& e, const VideoCore::Image& original,
     return result;
 }
 SceneTargets::Target SceneTargets::Attachment(VideoCore::ImageId id,
-                                               const VideoCore::ImageViewInfo& info) {
+                                               const VideoCore::ImageViewInfo& info, u32 samples) {
     auto& original = *lookup(id, 0);
-    auto& e = Get(id, info.range.base.level);
+    auto& e = Get(id, info.range.base.level, samples);
     const bool depth = original.info.props.is_depth;
     const auto layout = depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                               : vk::ImageLayout::eColorAttachmentOptimal;

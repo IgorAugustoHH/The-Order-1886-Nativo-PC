@@ -281,15 +281,15 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
         VideoCore::ImageViewInfo info;
         info.format = color.info.pixel_format;
         const auto c = scene_targets.Read(color_id, info);
-        info.format = velocity.info.pixel_format;
-        const auto v = scene_targets.Read(velocity_id, info);
         info.format = depth.info.pixel_format;
         const auto d = scene_targets.Read(scene_depth, info);
         color_in = c.view;
-        velocity_in = v.view;
+        // The native velocity (single-sample, resolved from its 2x proxy when bound above).
+        velocity_in =
+            TempView(velocity, velocity.info.pixel_format, vk::ImageAspectFlagBits::eColor);
         depth_in = d.view;
         color_layout = c.layout;
-        velocity_layout = v.layout;
+        velocity_layout = velocity.backing->state.layout;
         depth_layout = d.layout;
     } else {
         runtime.Transit(&depth, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
