@@ -5,10 +5,13 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <fmt/format.h>
+
 #include "video_core/host_shaders/order_dlss_prep_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
+#include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -31,6 +34,19 @@ bool EnvOn(const char* name) {
     return env && env[0] == '1';
 }
 
+/// BB_ORDER_DLSS_MODE: SceneResolution::ForPreset index (0 DLAA .. 4 Ultra Performance).
+int ModePreset() {
+    const char* env = std::getenv("BB_ORDER_DLSS_MODE");
+    if (!env || !env[0]) {
+        return 0;
+    }
+    if (!std::strcmp(env, "quality")) return 1;
+    if (!std::strcmp(env, "balanced")) return 2;
+    if (!std::strcmp(env, "performance")) return 3;
+    if (!std::strcmp(env, "ultra")) return 4;
+    return 0;
+}
+
 } // namespace
 
 bool OrderDlss::IsResolve(u64 cs_hash) noexcept {
@@ -39,12 +55,19 @@ bool OrderDlss::IsResolve(u64 cs_hash) noexcept {
 }
 
 OrderDlss::OrderDlss(const Instance& instance_, Scheduler& scheduler_,
-                     VideoCore::TextureCache& texture_cache_, Runtime& runtime_)
-    : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_}, runtime{runtime_} {
+                     VideoCore::TextureCache& texture_cache_, Runtime& runtime_,
+                     SceneTargets& scene_targets_)
+    : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
+      runtime{runtime_}, scene_targets{scene_targets_} {
     enabled = EnvOn("BB_ORDER_DLSS");
     depth_invert = EnvOn("BB_ORDER_DLSS_DEPTH_INVERT");
     if (!enabled) {
         return;
+    }
+    if (const int preset = ModePreset()) {
+        scaled = true;
+        scene_size = SceneResolution::ForPreset(preset, {1920, 1080});
+        scene_targets.allow_msaa = true;
     }
     const auto device = instance.GetDevice();
     std::array<vk::DescriptorSetLayoutBinding, 7> bindings{};
@@ -78,11 +101,26 @@ OrderDlss::OrderDlss(const Instance& instance_, Scheduler& scheduler_,
                 .layout = *pipeline_layout,
             }));
     device.destroyShaderModule(module);
-    std::printf("Order DLSS: on (replaces the temporal MSAA resolve; depth invert %d)\n",
-                depth_invert ? 1 : 0);
+    std::printf("Order DLSS: on (replaces the temporal MSAA resolve; depth invert %d; scene %s)\n",
+                depth_invert ? 1 : 0,
+                scaled ? fmt::format("{}x{} -> 1920x1080", scene_size.width, scene_size.height)
+                             .c_str()
+                       : "native (DLAA)");
 }
 
 OrderDlss::~OrderDlss() = default;
+
+void OrderDlss::OpenScene() {
+    if (!Scaling() || scene_open) {
+        return;
+    }
+    if (!size_set) {
+        scheduler.EndRendering();
+        scene_targets.SetSize(scene_size);
+        size_set = true;
+    }
+    scene_open = true;
+}
 
 void OrderDlss::OnTargets(VideoCore::ImageId color, VideoCore::ImageId depth) {
     if (!color || !depth) {
@@ -95,21 +133,21 @@ void OrderDlss::OnTargets(VideoCore::ImageId color, VideoCore::ImageId depth) {
     }
 }
 
-bool OrderDlss::EnsureResources(u32 w, u32 h) {
-    if (w == width && h == height && output_view) {
+bool OrderDlss::EnsureResources(u32 w, u32 h, u32 ow, u32 oh) {
+    if (w == width && h == height && ow == out_width && oh == out_height && output_view) {
         return true;
     }
     scheduler.Finish(); // the previous images may still be in use
     const auto device = instance.GetDevice();
     const auto allocator = instance.GetAllocator();
     const auto make = [&](VideoCore::UniqueImage& image, vk::UniqueImageView& view,
-                          vk::Format format, vk::ImageUsageFlags usage) {
+                          vk::Format format, vk::ImageUsageFlags usage, u32 iw, u32 ih) {
         view.reset();
         image = VideoCore::UniqueImage(device, allocator);
         image.Create(vk::ImageCreateInfo{
             .imageType = vk::ImageType::e2D,
             .format = format,
-            .extent = {w, h, 1},
+            .extent = {iw, ih, 1},
             .mipLevels = 1,
             .arrayLayers = 1,
             .samples = vk::SampleCountFlagBits::e1,
@@ -125,15 +163,17 @@ bool OrderDlss::EnsureResources(u32 w, u32 h) {
         }));
     };
     const auto rw = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled;
-    make(color_image, color_view, vk::Format::eR16G16B16A16Sfloat, rw);
-    make(motion_image, motion_view, vk::Format::eR16G16Sfloat, rw);
-    make(depth_image, depth_view, vk::Format::eR32Sfloat, rw);
+    make(color_image, color_view, vk::Format::eR16G16B16A16Sfloat, rw, w, h);
+    make(motion_image, motion_view, vk::Format::eR16G16Sfloat, rw, w, h);
+    make(depth_image, depth_view, vk::Format::eR32Sfloat, rw, w, h);
     make(output_image, output_view, vk::Format::eR16G16B16A16Sfloat,
-         rw | vk::ImageUsageFlagBits::eTransferSrc);
+         rw | vk::ImageUsageFlagBits::eTransferSrc, ow, oh);
     width = w;
     height = h;
+    out_width = ow;
+    out_height = oh;
     reset = true;
-    std::printf("Order DLSS: resources %ux%u\n", w, h);
+    std::printf("Order DLSS: resources %ux%u -> %ux%u\n", w, h, ow, oh);
     return true;
 }
 
@@ -151,6 +191,9 @@ vk::ImageView OrderDlss::TempView(const VideoCore::Image& image, vk::Format form
 }
 
 bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<const u32> flatbuf) {
+    // The reduced scene ends at the resolve, whether DLSS runs or not.
+    const bool was_open = scene_open;
+    scene_open = false;
     Dlss* dlss = Dlss::Get();
     if (!enabled || failed || !dlss || !dlss->Available() || flatbuf.size() < 66) {
         return false;
@@ -189,16 +232,30 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
     auto& exposure = texture_cache.GetImage(exposure_id);
     auto& output = texture_cache.GetImage(output_id);
     auto& depth = texture_cache.GetImage(scene_depth);
-    const u32 w = output.info.size.width, h = output.info.size.height;
+    const u32 ow = output.info.size.width, oh = output.info.size.height;
     const auto same = [&](const VideoCore::Image& i) {
-        return i.info.size.width == w && i.info.size.height == h;
+        return i.info.size.width == ow && i.info.size.height == oh;
     };
     if (!same(color) || !same(velocity) || !same(depth) ||
         depth.info.num_samples != color.info.num_samples || !depth.info.props.is_depth ||
         !(output.usage_flags & vk::ImageUsageFlagBits::eTransferDst)) {
         return skip("resource sizes or formats differ");
     }
-    if (!EnsureResources(w, h)) {
+    // The reduced scene: every input has a proxy at the scene size (drawn this frame).
+    const bool reduced = was_open && scene_targets.Reduced() &&
+                         scene_targets.Eligible(color) && scene_targets.Eligible(velocity) &&
+                         scene_targets.Eligible(depth);
+    if (Scaling() && !reduced) {
+        static u32 native_logged = 0;
+        if (native_logged < 8) {
+            ++native_logged;
+            std::printf("Order DLSS: scene drawn at native size this frame (open %d)\n",
+                        was_open ? 1 : 0);
+        }
+    }
+    const u32 w = reduced ? scene_targets.Size().width : ow;
+    const u32 h = reduced ? scene_targets.Size().height : oh;
+    if (!EnsureResources(w, h, ow, oh)) {
         return false;
     }
 
@@ -217,9 +274,36 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
     std::memcpy(&exposure_flag, &flatbuf[61], 4);
 
     scheduler.EndRendering();
-    runtime.Transit(&depth, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
-                    vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
-    runtime.FlushBarriers();
+    vk::ImageView color_in, velocity_in, depth_in;
+    vk::ImageLayout color_layout, velocity_layout, depth_layout;
+    if (reduced) {
+        // The proxies hold this frame's scene; Read leaves them in General for compute reads.
+        VideoCore::ImageViewInfo info;
+        info.format = color.info.pixel_format;
+        const auto c = scene_targets.Read(color_id, info);
+        info.format = velocity.info.pixel_format;
+        const auto v = scene_targets.Read(velocity_id, info);
+        info.format = depth.info.pixel_format;
+        const auto d = scene_targets.Read(scene_depth, info);
+        color_in = c.view;
+        velocity_in = v.view;
+        depth_in = d.view;
+        color_layout = c.layout;
+        velocity_layout = v.layout;
+        depth_layout = d.layout;
+    } else {
+        runtime.Transit(&depth, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
+        color_in = TempView(color, color.info.pixel_format, vk::ImageAspectFlagBits::eColor);
+        velocity_in =
+            TempView(velocity, velocity.info.pixel_format, vk::ImageAspectFlagBits::eColor);
+        depth_in = TempView(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eDepth);
+        color_layout = color.backing->state.layout;
+        velocity_layout = velocity.backing->state.layout;
+        depth_layout = depth.backing->state.layout;
+    }
     const auto cmdbuf = scheduler.CommandBuffer();
 
     const auto own_barrier = [&](vk::Image image, vk::ImageLayout old_layout,
@@ -247,12 +331,9 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
     }
 
     const vk::DescriptorImageInfo infos[7] = {
-        {.imageView = TempView(color, color.info.pixel_format, vk::ImageAspectFlagBits::eColor),
-         .imageLayout = color.backing->state.layout},
-        {.imageView = TempView(velocity, velocity.info.pixel_format, vk::ImageAspectFlagBits::eColor),
-         .imageLayout = velocity.backing->state.layout},
-        {.imageView = TempView(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eDepth),
-         .imageLayout = depth.backing->state.layout},
+        {.imageView = color_in, .imageLayout = color_layout},
+        {.imageView = velocity_in, .imageLayout = velocity_layout},
+        {.imageView = depth_in, .imageLayout = depth_layout},
         {.imageView = *color_view, .imageLayout = vk::ImageLayout::eGeneral},
         {.imageView = *motion_view, .imageLayout = vk::ImageLayout::eGeneral},
         {.imageView = *depth_view, .imageLayout = vk::ImageLayout::eGeneral},
@@ -267,10 +348,11 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
                                                           : vk::DescriptorType::eSampledImage,
                      .pImageInfo = &infos[i]};
     }
+    // The game's velocity is in output (1920x1080) pixels; DLSS takes render pixels.
     const PushConstants push{
         .width = w,
         .height = h,
-        .velocity_scale = velocity_scale,
+        .velocity_scale = velocity_scale * float(w) / float(ow),
         .log2_exposure = log2_exposure,
         .samples = color.info.num_samples,
         .depth_invert = depth_invert ? 1u : 0u,
@@ -288,14 +370,15 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
                     vk::AccessFlagBits2::eShaderRead);
     }
 
-    const Dlss::FeatureDesc desc{w, h, w, h, Dlss::QualityForScale(1.0f), true};
+    const Dlss::FeatureDesc desc{w, h, ow, oh, Dlss::QualityForScale(float(ow) / float(w)), true};
     bool ok = true;
     if (!dlss->HasFeature(desc)) {
         scheduler.WaitSubmitted();
         dlss->ReleaseFeature();
         ok = dlss->CreateFeature(cmdbuf, desc);
         reset = true;
-        std::printf("Order DLSS: feature %ux%u DLAA %s\n", w, h, ok ? "created" : "FAILED");
+        std::printf("Order DLSS: feature %ux%u -> %ux%u quality %d %s\n", w, h, ow, oh,
+                    desc.quality, ok ? "created" : "FAILED");
     }
     if (ok) {
         ok = dlss->Evaluate(cmdbuf, {
@@ -306,7 +389,7 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
             .motion = {vk::Image(motion_image), *motion_view, vk::Format::eR16G16Sfloat,
                        vk::ImageAspectFlagBits::eColor, w, h},
             .output = {vk::Image(output_image), *output_view, vk::Format::eR16G16B16A16Sfloat,
-                       vk::ImageAspectFlagBits::eColor, w, h},
+                       vk::ImageAspectFlagBits::eColor, ow, oh},
             .jitter_x = 0.0f,
             .jitter_y = 0.0f,
             .reset = reset,
@@ -331,15 +414,16 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
     const vk::ImageCopy region{
         .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
         .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-        .extent = {w, h, 1},
+        .extent = {ow, oh, 1},
     };
     cmdbuf.copyImage(vk::Image(output_image), vk::ImageLayout::eTransferSrcOptimal,
                      vk::Image(output.backing->image), vk::ImageLayout::eTransferDstOptimal,
                      region);
     if (++frames == 1 || frames % 1800 == 0) {
-        std::printf("Order DLSS: %llu frames reconstructed (%ux%u, %u samples, velocity scale "
-                    "%g)\n",
-                    (unsigned long long)frames, w, h, color.info.num_samples, velocity_scale);
+        std::printf("Order DLSS: %llu frames reconstructed (%ux%u -> %ux%u, %u samples, velocity "
+                    "scale %g)\n",
+                    (unsigned long long)frames, w, h, ow, oh, color.info.num_samples,
+                    velocity_scale);
     }
     return true;
 }

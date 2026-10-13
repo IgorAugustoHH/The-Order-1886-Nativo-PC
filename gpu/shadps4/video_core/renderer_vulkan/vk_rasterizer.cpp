@@ -245,7 +245,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
-    order_dlss = std::make_unique<OrderDlss>(instance, scheduler, texture_cache, runtime);
+    order_dlss = std::make_unique<OrderDlss>(instance, scheduler, texture_cache, runtime,
+                                              *scene_targets);
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
     }
@@ -3188,7 +3189,8 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     // bbport: RenderStateMemo (see BeginMemo).
-    const bool memo_on = !BbToggle::Disabled(BbToggle::RenderStateMemo) && !FrameCapture::Active();
+    const bool memo_on = !BbToggle::Disabled(BbToggle::RenderStateMemo) && !FrameCapture::Active() &&
+                         !order_dlss->Scaling(); // The Order: reduced scene windows
     if (BbStats::enabled && ((begin_memo_hits + begin_memo_misses) & 0x3FFFF) == 0x3FFFF) {
         std::printf("Render state memo: %llu hits, %llu misses; texture sets: %llu hits, %llu "
                     "misses\n",
@@ -3260,7 +3262,14 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first))) scene_started = true;
     // A proxy attachment cannot represent MSAA or a feedback loop that reads the
     // same image through the guest's native descriptor during this draw.
-    bool reduced = scene_started && upscaler->RasterScaling() && key.num_samples == 1;
+    // bbport (The Order): the reduced scene opens at the first pass drawing the MSAA scene
+    // depth and closes at the temporal resolve (OrderDlss); MSAA targets have proxies there.
+    if (order_dlss->Scaling() && db_desc.first && key.num_samples > 1 &&
+        scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first))) {
+        order_dlss->OpenScene();
+    }
+    bool reduced = order_dlss->SceneOpen() ||
+                   (scene_started && upscaler->RasterScaling() && key.num_samples == 1);
     // BB_SCENE_DEBUG=<file>: once the file exists, why the passes of one frame keep the
     // native size (see NoteFrameStart).
     const bool debug_pass = scene_debug_frame && scene_started;

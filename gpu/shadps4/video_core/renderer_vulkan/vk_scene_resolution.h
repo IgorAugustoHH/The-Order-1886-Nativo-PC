@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <array>
+#include <tuple>
 #include <memory>
 #include <optional>
 #include <functional>
@@ -65,6 +66,9 @@ public:
     }
     void ResolveAll();
     bool debug = false; ///< BB_SCENE_DEBUG frame: print resolves and fills
+    /// bbport (The Order): multisampled scene targets (D32, float/unorm color) get proxies too,
+    /// copied sample by sample (MsResample).
+    bool allow_msaa = false;
 private:
     struct Entry {
         VideoCore::ImageId source{};
@@ -89,6 +93,9 @@ private:
     void Resample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
                   vk::Extent2D dst_size);
     vk::Pipeline ResamplePipeline(vk::Format, bool stencil);
+    void MsResample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
+                    vk::Extent2D dst_size);
+    vk::Pipeline MsResamplePipeline(vk::Format, bool depth, u32 samples);
     void CreateResampleResources();
     void Transition(Entry&, vk::ImageAspectFlags, vk::ImageLayout,
                     vk::PipelineStageFlags2, vk::AccessFlags2);
@@ -111,5 +118,7 @@ private:
     vk::UniqueDescriptorSetLayout resample_set_layout;
     vk::UniquePipelineLayout resample_layout;
     std::vector<std::pair<std::pair<vk::Format, bool>, vk::UniquePipeline>> resample_pipelines;
+    vk::UniqueShaderModule ms_depth_frag, ms_color_frag;
+    std::vector<std::pair<std::tuple<vk::Format, bool, u32>, vk::UniquePipeline>> ms_pipelines;
 };
 } // namespace Vulkan

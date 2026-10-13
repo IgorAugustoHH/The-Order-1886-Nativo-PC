@@ -9,6 +9,8 @@
 #include "video_core/host_shaders/depth_stencil_resample_frag.h"
 #include "video_core/host_shaders/depth_stencil_bits_frag.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
+#include "video_core/host_shaders/ms_resample_color_frag.h"
+#include "video_core/host_shaders/ms_resample_depth_frag.h"
 #include "bbport_toggles.h"
 #include <cstdio>
 #include <cstdlib>
@@ -81,9 +83,18 @@ static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scen
 bool SceneTargets::Eligible(const VideoCore::Image& image) const {
     const auto& i = image.info;
     const u32 div = SizeDivisor(i, size);
-    if (!div || i.size.depth != 1 || i.resources.layers != 1 || i.num_samples != 1 ||
-        i.props.is_block || !image.backing || image.backing->num_samples != 1) {
+    if (!div || i.size.depth != 1 || i.resources.layers != 1 || i.props.is_block ||
+        !image.backing || image.backing->num_samples != i.num_samples) {
         return false;
+    }
+    if (i.num_samples != 1) {
+        // The Order: 2x MSAA scene targets, copied by MsResample (float/unorm color, D32).
+        const auto format = image.backing->image.image_ci.format;
+        return allow_msaa && div == 1 && i.resources.levels == 1 &&
+               (i.props.is_depth ? format == vk::Format::eD32Sfloat
+                                 : format == vk::Format::eR16G16B16A16Sfloat ||
+                                       format == vk::Format::eA2B10G10R10UnormPack32 ||
+                                       format == vk::Format::eR8G8B8A8Unorm);
     }
     if (i.resources.levels != 1) {
         // Mip chains (the bloom pyramid at half resolution): one blitted proxy per level.
@@ -160,6 +171,32 @@ void SceneTargets::Copy(Entry& e, VideoCore::Image& original, bool to_native) {
     }
     const vk::Image src = to_native ? vk::Image(e.image) : original.GetImage();
     const vk::Image dst = to_native ? original.GetImage() : vk::Image(e.image);
+    if (original.info.num_samples > 1) {
+        const bool depth = original.info.props.is_depth;
+        constexpr auto read_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        const auto write_layout = depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                        : vk::ImageLayout::eColorAttachmentOptimal;
+        constexpr auto read_stage = vk::PipelineStageFlagBits2::eFragmentShader;
+        const auto write_stage = depth ? vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                             vk::PipelineStageFlagBits2::eLateFragmentTests
+                                       : vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+        constexpr auto read_access = vk::AccessFlagBits2::eShaderSampledRead;
+        const auto write_access = depth ? vk::AccessFlagBits2::eDepthStencilAttachmentWrite
+                                        : vk::AccessFlagBits2::eColorAttachmentWrite;
+        runtime.Transit(&original, to_native ? write_layout : read_layout,
+                        to_native ? write_stage : read_stage,
+                        to_native ? write_access : read_access);
+        runtime.FlushBarriers();
+        Transition(e, original.aspect_mask, to_native ? read_layout : write_layout,
+                   to_native ? read_stage : write_stage, to_native ? read_access : write_access);
+        const auto& proxy = e.image.image_ci.extent;
+        MsResample(src, dst, original,
+                   to_native ? vk::Extent2D{original.info.size.width, original.info.size.height}
+                             : vk::Extent2D{proxy.width, proxy.height});
+        if (to_native) e.state.Resolved(); else e.state.CopiedToProxy();
+        copying = false;
+        return;
+    }
     if (ShaderResampled(original)) {
         constexpr auto read_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
         constexpr auto write_layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
@@ -302,6 +339,8 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
 void SceneTargets::CreateResampleResources() {
     const auto device = instance.GetDevice();
     fs_tri_vert = vk::UniqueShaderModule(CompileSPV(FS_TRI_VERT, device), device);
+    ms_depth_frag = vk::UniqueShaderModule(CompileSPV(MS_RESAMPLE_DEPTH_FRAG, device), device);
+    ms_color_frag = vk::UniqueShaderModule(CompileSPV(MS_RESAMPLE_COLOR_FRAG, device), device);
     depth_frag = vk::UniqueShaderModule(CompileSPV(DEPTH_RESAMPLE_FRAG, device), device);
     if (instance.IsShaderStencilExportSupported() && !force_stencil_bits) {
         depth_stencil_frag =
@@ -382,6 +421,113 @@ vk::Pipeline SceneTargets::ResamplePipeline(vk::Format format, bool stencil) {
     }));
     const auto result = *pipeline;
     resample_pipelines.emplace_back(key, std::move(pipeline));
+    return result;
+}
+void SceneTargets::MsResample(vk::Image src, vk::Image dst, const VideoCore::Image& original,
+                              vk::Extent2D dst_size) {
+    const auto device = instance.GetDevice();
+    const auto format = original.backing->image.image_ci.format;
+    const bool depth = original.info.props.is_depth;
+    const auto aspect = depth ? vk::ImageAspectFlags(vk::ImageAspectFlagBits::eDepth)
+                              : vk::ImageAspectFlags(vk::ImageAspectFlagBits::eColor);
+    const auto make_view = [&](vk::Image image, vk::ImageUsageFlags usage) {
+        const vk::ImageViewUsageCreateInfo usage_ci{.usage = usage};
+        return Check(device.createImageView({
+            .pNext = &usage_ci, .image = image, .viewType = vk::ImageViewType::e2D,
+            .format = format, .subresourceRange = {aspect, 0, 1, 0, 1},
+        }));
+    };
+    const auto source_view = make_view(src, vk::ImageUsageFlagBits::eSampled);
+    const auto target_view = make_view(dst, depth ? vk::ImageUsageFlagBits::eDepthStencilAttachment
+                                                  : vk::ImageUsageFlagBits::eColorAttachment);
+    scheduler.DeferOperation([device, source_view, target_view] {
+        device.destroyImageView(source_view);
+        device.destroyImageView(target_view);
+    });
+    const auto pipeline = MsResamplePipeline(format, depth, original.info.num_samples);
+    const auto layout = *resample_layout;
+    scheduler.Record([=](vk::CommandBuffer cmd) {
+        const vk::RenderingAttachmentInfo attachment{
+            .imageView = target_view,
+            .imageLayout = depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                 : vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eDontCare,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        };
+        cmd.beginRendering({
+            .renderArea = {{0, 0}, dst_size},
+            .layerCount = 1,
+            .colorAttachmentCount = depth ? 0u : 1u,
+            .pColorAttachments = depth ? nullptr : &attachment,
+            .pDepthAttachment = depth ? &attachment : nullptr,
+        });
+        const vk::DescriptorImageInfo info{{}, source_view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::WriteDescriptorSet write{.dstBinding = 0,
+                                           .descriptorCount = 1,
+                                           .descriptorType = vk::DescriptorType::eSampledImage,
+                                           .pImageInfo = &info};
+        cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, layout, 0, write);
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+        cmd.setViewportWithCount(vk::Viewport{0.f, 0.f, float(dst_size.width),
+                                              float(dst_size.height), 0.f, 1.f});
+        cmd.setScissorWithCount(vk::Rect2D{{0, 0}, dst_size});
+        cmd.draw(3, 1, 0, 0);
+        cmd.endRendering();
+    });
+    scheduler.GetDynamicState().Invalidate();
+}
+vk::Pipeline SceneTargets::MsResamplePipeline(vk::Format format, bool depth, u32 samples) {
+    const std::tuple key{format, depth, samples};
+    for (const auto& [k, pipeline] : ms_pipelines) if (k == key) return *pipeline;
+    const vk::PipelineInputAssemblyStateCreateInfo input_assembly{
+        .topology = vk::PrimitiveTopology::eTriangleList,
+    };
+    const vk::PipelineMultisampleStateCreateInfo multisampling{
+        .rasterizationSamples = vk::SampleCountFlagBits(samples),
+        .sampleShadingEnable = true,
+        .minSampleShading = 1.0f,
+    };
+    const vk::PipelineDepthStencilStateCreateInfo depth_state{
+        .depthTestEnable = depth, .depthWriteEnable = depth,
+        .depthCompareOp = vk::CompareOp::eAlways,
+    };
+    const std::array dynamic_states{vk::DynamicState::eViewportWithCount,
+                                    vk::DynamicState::eScissorWithCount};
+    const vk::PipelineDynamicStateCreateInfo dynamic_info{
+        .dynamicStateCount = u32(dynamic_states.size()), .pDynamicStates = dynamic_states.data(),
+    };
+    const std::array stages{
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eVertex,
+                                          .module = *fs_tri_vert, .pName = "main"},
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eFragment,
+                                          .module = depth ? *ms_depth_frag : *ms_color_frag,
+                                          .pName = "main"},
+    };
+    const vk::PipelineRenderingCreateInfo rendering{
+        .colorAttachmentCount = depth ? 0u : 1u,
+        .pColorAttachmentFormats = depth ? nullptr : &format,
+        .depthAttachmentFormat = depth ? format : vk::Format::eUndefined,
+    };
+    const vk::PipelineColorBlendAttachmentState blend{
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
+    const vk::PipelineColorBlendStateCreateInfo color_blending{
+        .attachmentCount = depth ? 0u : 1u, .pAttachments = &blend,
+    };
+    const vk::PipelineViewportStateCreateInfo viewport_info{};
+    const vk::PipelineVertexInputStateCreateInfo vertex_input{};
+    const vk::PipelineRasterizationStateCreateInfo raster{.lineWidth = 1.f};
+    auto pipeline = Check(instance.GetDevice().createGraphicsPipelineUnique(VK_NULL_HANDLE, {
+        .pNext = &rendering, .stageCount = u32(stages.size()), .pStages = stages.data(),
+        .pVertexInputState = &vertex_input, .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_info, .pRasterizationState = &raster,
+        .pMultisampleState = &multisampling, .pDepthStencilState = &depth_state,
+        .pColorBlendState = &color_blending, .pDynamicState = &dynamic_info,
+        .layout = *resample_layout,
+    }));
+    const auto result = *pipeline;
+    ms_pipelines.emplace_back(key, std::move(pipeline));
     return result;
 }
 SceneTargets::Entry& SceneTargets::Get(VideoCore::ImageId id, u32 level) {
