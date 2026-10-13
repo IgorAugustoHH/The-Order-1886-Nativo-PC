@@ -3520,7 +3520,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         }
 
         if (reduced) {
-            const auto target = scene_targets->Attachment(image_id, desc.view_info);
+            const auto target = scene_targets->Attachment(
+                image_id, desc.view_info, 0,
+                regs.depth_control.depth_write_enable || regs.depth_control.stencil_enable ||
+                    attachment.depth_clear || attachment.stencil_clear);
             attachment.image_view = target.view;
             attachment.image_layout = target.layout;
         }

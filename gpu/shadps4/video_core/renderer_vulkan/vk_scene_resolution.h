@@ -42,7 +42,8 @@ public:
     };
     /// samples: the pass's sample count for this attachment (The Order draws single-sample
     /// targets in 2x MSAA passes); 0 keeps the image's.
-    Target Attachment(VideoCore::ImageId, const VideoCore::ImageViewInfo&, u32 samples = 0);
+    Target Attachment(VideoCore::ImageId, const VideoCore::ImageViewInfo&, u32 samples = 0,
+                      bool writes = true);
     /// A multisampled proxy (or a proxy of a multisampled image) can be copied by MsResample.
     [[nodiscard]] bool MsCopyable(vk::Format format) const;
     Target Read(VideoCore::ImageId, const VideoCore::ImageViewInfo&,

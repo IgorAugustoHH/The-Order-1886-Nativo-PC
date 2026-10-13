@@ -622,7 +622,8 @@ vk::ImageView SceneTargets::View(Entry& e, const VideoCore::Image& original,
     return result;
 }
 SceneTargets::Target SceneTargets::Attachment(VideoCore::ImageId id,
-                                               const VideoCore::ImageViewInfo& info, u32 samples) {
+                                               const VideoCore::ImageViewInfo& info, u32 samples,
+                                               bool writes) {
     auto& original = *lookup(id, 0);
     auto& e = Get(id, info.range.base.level, samples);
     const bool depth = original.info.props.is_depth;
@@ -636,7 +637,9 @@ SceneTargets::Target SceneTargets::Attachment(VideoCore::ImageId id,
             depth ? vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eDepthStencilAttachmentWrite
                   : vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite);
     }
-    e.state.ProxyWrite();
+    // A depth attachment without depth writes (soft particles that also sample it) leaves
+    // the native image current: no resolve before every such draw.
+    if (writes) e.state.ProxyWrite();
     auto attachment_info = info;
     attachment_info.is_storage = true; // include stencil in attachment views
     return {e.image, View(e, original, attachment_info), e.layout, e.image.image_ci.usage};
