@@ -1676,6 +1676,35 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         return;
     }
 
+    // bbport (The Order): the EVSM shadow conversion (cs 8ea0ef5b, 9846aaff) reads HTILE and
+    // writes the clear depth for tiles whose zmask is 0 instead of reading them. The host does
+    // not maintain HTILE, so tiles with real depth read as cleared: blocks of the sun shadow
+    // went missing and flickered (shadPS4 PR #4798, item 2). Mark the bound HTILE uncompressed
+    // right before the dispatch, in order on the GPU: every tile then reads the real depth
+    // (a truly cleared tile holds the clear depth, the same value the shortcut writes).
+    // BB_EVSM_HTILE=0 restores the previous behavior.
+    static const bool evsm_htile = [] {
+        const char* env = std::getenv("BB_EVSM_HTILE");
+        return !(env && env[0] == '0');
+    }();
+    if (evsm_htile && (cs.pgm_hash == 0x8ea0ef5b || cs.pgm_hash == 0x9846aaff)) {
+        for (const auto& desc : cs.buffers) {
+            if (desc.IsSpecial() || desc.is_written) {
+                continue;
+            }
+            const auto sharp = desc.GetSharp(cs);
+            const VAddr address = sharp.base_address;
+            const u64 size = address ? memory->ClampRangeSize(address, sharp.GetSize()) : 0;
+            if (size) {
+                static constexpr u32 ZmaskUncompressed = 0xf;
+                const auto [buffer, offset] =
+                    buffer_cache.ObtainBuffer(address, static_cast<u32>(size), true);
+                runtime.FillBuffer(buffer, offset, size, ZmaskUncompressed);
+            }
+            break; // the first read-only buffer is the HTILE
+        }
+    }
+
     // The Order: the resolve DLSS replaces reads the reduced proxies; binding it must not
     // first rebuild the full-size scene color (a 1080p 2x MSAA RGBA16F copy per frame).
     const bool order_resolve = order_dlss->Scaling() && order_dlss->SceneOpen() &&
