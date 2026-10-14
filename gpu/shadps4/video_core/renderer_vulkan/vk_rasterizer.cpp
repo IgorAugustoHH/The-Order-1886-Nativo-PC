@@ -4081,33 +4081,7 @@ void Rasterizer::UpdateDepthStencilState() const {
     }
 
     const auto depth_bias_enabled = regs.polygon_control.NeedsBias();
-    // BB_REDRAW_DEPTH_BIAS=<units> (test, off by default): global form of the facial depth fix.
-    // A pass that draws the same mesh again over an earlier one (depth test LessEqual or
-    // GreaterEqual, no depth write, no bias of its own) relies on bit-identical positions; on
-    // PC the last bit can differ and the test fails at single pixels (dark dots on faces). A
-    // tiny constant bias toward the camera lets it pass, whatever the shader or character.
-    static const float redraw_bias = [] {
-        const char* env = std::getenv("BB_REDRAW_DEPTH_BIAS");
-        const float units = env ? float(std::atof(env)) : 0.0f;
-        if (units > 0.0f) {
-            std::printf("Redraw depth bias: %.0f units on LessEqual/GreaterEqual passes without "
-                        "depth writes (test)\n", units);
-        }
-        return units;
-    }();
-    const AmdGpu::CompareFunc depth_func = regs.depth_control.depth_func;
-    const bool redraw = redraw_bias > 0.0f && depth_test_enabled && !depth_bias_enabled &&
-                        !regs.depth_control.depth_write_enable &&
-                        (depth_func == AmdGpu::CompareFunc::LessEqual ||
-                         depth_func == AmdGpu::CompareFunc::GreaterEqual);
-    if (redraw) {
-        dynamic_state.SetDepthBiasEnabled(true);
-        dynamic_state.SetDepthBias(depth_func == AmdGpu::CompareFunc::LessEqual ? -redraw_bias
-                                                                                 : redraw_bias,
-                                   0.0f, 0.0f);
-    } else {
-        dynamic_state.SetDepthBiasEnabled(depth_bias_enabled);
-    }
+    dynamic_state.SetDepthBiasEnabled(depth_bias_enabled);
     if (depth_bias_enabled) {
         // BB_DEPTH_BIAS_RAW=1: pass the guest slope scale as-is instead of dividing by 16
         // (A/B test from the inFAMOUS/GoW3 ports' TLG_LIGHTING_TEST "bias").
