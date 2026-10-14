@@ -149,6 +149,7 @@ def toport_environment(env, config):
             env.setdefault('BB_ORDER_DLSS_MODE', aa)
     # 720 is the game's own default; 2160 (experimental) is its -use4K branch, flag included.
     resolution = setting('order_resolution', '1080')
+    # 2160 stays reachable only through bbport.ini/BB_ORDER_RESOLUTION for investigation.
     if resolution in ('1080', '2160'):
         env.setdefault('BB_ORDER_RESOLUTION', resolution)
     if resolution == '2160':

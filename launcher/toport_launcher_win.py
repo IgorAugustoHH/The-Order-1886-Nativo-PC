@@ -91,8 +91,7 @@ def run_command():
 AA_MODES = [('game', 'TAA original do jogo'), ('dlaa', 'DLSS DLAA (resolução nativa)'),
             ('quality', 'DLSS Qualidade'), ('balanced', 'DLSS Equilibrado'),
             ('performance', 'DLSS Desempenho'), ('ultra', 'DLSS Ultra Desempenho')]
-RESOLUTIONS = [('720', '1280 x 720 (padrão do jogo)'), ('1080', '1920 x 1080'),
-               ('2160', '3840 x 2160 (experimental)')]
+RESOLUTIONS = [('720', '1280 x 720 (padrão do jogo)'), ('1080', '1920 x 1080')]
 FPS_LIMITS = [('30', '30 FPS'), ('60', '60 FPS'), ('90', '90 FPS'), ('120', '120 FPS')]
 # PS4 system language codes (gpu/shim/bbport_settings.h GameLanguages).
 LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1', 'English (US)'),
@@ -120,6 +119,8 @@ def read_ini():
                 values[key] = value
     except OSError:
         pass
+    if values.get('order_resolution') not in ('720', '1080'):
+        values['order_resolution'] = '1080'  # 1440p/4K tests left out of the launcher
     return values
 
 
@@ -573,9 +574,8 @@ class Launcher:
                  'saída (mais FPS). TAA original é o anti-aliasing do PS4.')
         self.section(f, 'Resolução')
         self.row(f, 'Resolução do jogo', self.choice(f, 'order_resolution', 'ini', RESOLUTIONS),
-                 'O próprio jogo escolhe a resolução interna ao iniciar. 1920x1080 é a recomendada. '
-                 '3840x2160 é experimental: usa o modo 4K do próprio jogo, pede bem mais memória '
-                 '(feche outros programas) e o DLSS ainda não foi validado nele.')
+                 'O próprio jogo escolhe a resolução interna ao iniciar. 1920x1080 é a recomendada '
+                 '(1440p e 4K foram testados e dão artefatos neste port).')
         self.note(f, 'O jogo foi feito com câmera em 2.40:1 no PS4; o TOport mostra a cena inteira em '
                      '16:9 (a versão nativa em 1920x800 está prevista).')
 
