@@ -16,6 +16,7 @@ WRITES_1080 = [
 # movl $imm32, -0x428(%rbp) / -0x424(%rbp): the rectangle's width and height
 RECT_WIDTH = (0x44cf65, bytes.fromhex('c7 85 d8 fb ff ff 80 07 00 00'))
 RECT_HEIGHT = (0x44cf6f, bytes.fromhex('c7 85 dc fb ff ff 38 04 00 00'))
+RECT_Y = (0x44cf5b, bytes.fromhex('c7 85 d4 fb ff ff 00 00 00 00'))  # -0x42c(%rbp)
 
 
 def elf_offset(elf, target, length):
@@ -43,8 +44,13 @@ def resolution_writes(elf, mode):
     print('The Order: resolucao forcada para 1920x1080 (2 escritas)')
     rect = os.environ.get('BB_ORDER_SCENE_RECT')
     if rect:
-        w, h = (int(v) for v in rect.lower().split('x'))
-        for (target, original), value in ((RECT_WIDTH, w), (RECT_HEIGHT, h)):
+        # WxH or WxH+Y (vertical offset, e.g. 1920x800+140 for the PS4's 2.40:1 letterbox).
+        size, _, y = rect.lower().partition('+')
+        w, h = (int(v) for v in size.split('x'))
+        fields = [(RECT_WIDTH, w), (RECT_HEIGHT, h)]
+        if y:
+            fields.append((RECT_Y, int(y)))
+        for (target, original), value in fields:
             start = elf_offset(elf, target, len(original))
             if elf[start:start + len(original)] != original:
                 raise ValueError(f'Resolucao: instrucao do retangulo diverge em {target:#x}')

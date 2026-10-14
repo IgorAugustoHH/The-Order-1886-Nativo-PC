@@ -86,7 +86,7 @@ TOPORT_DEFAULTS = {
     'BB_FRAMES_AHEAD': '2', 'BB_VK_RECORD_THREAD': '1', 'BB_VK_RECORD_THREADS': '1',
     'BB_VK_SEGMENT_KB': '64', 'BB_ASYNC_SUBMIT': '0', 'BB_EMPTY_IMAGE_QUEUE_FAST': '0',
     'BB_GC_IDLE_SECONDS': '0', 'BB_VMA_BLOCK_MB': '0', 'BB_VMA_DEDICATED_MB': '0',
-    'BB_VBLANK_HZ': '0', 'BB_FULLSCREEN': '1', 'BB_JITTER': '0', 'BB_OBJECT_MOTION': '0',
+    'BB_VBLANK_HZ': '0', 'BB_FULLSCREEN': '2', 'BB_JITTER': '0', 'BB_OBJECT_MOTION': '0',
     'BB_FRAME_STATS': '1', 'BB_DMA_TRACE': '1', 'BB_PERM_TRACE': '1', 'BB_TIMEOUT': '0',
     # Third-party Vulkan layers (overlays, recorders) stay out, as in every approved run.
     'VK_LOADER_LAYERS_DISABLE': '~implicit~',

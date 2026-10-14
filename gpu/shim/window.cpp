@@ -1,4 +1,5 @@
 // bbport: SDL3 window for the Vulkan swapchain (X11 or Wayland).
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <SDL3/SDL.h>
@@ -23,11 +24,29 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
     const char* fullscreen = std::getenv("BB_FULLSCREEN");
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
+    // BB_FULLSCREEN: 1 borderless fullscreen (desktop mode), 2 exclusive fullscreen at the
+    // display mode closest to the game's size (as shadPS4's "Exclusive" mode).
+    const bool exclusive = fullscreen && fullscreen[0] == '2';
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
+                           fullscreen && fullscreen[0] == '1');
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
+    if (exclusive) {
+        SDL_DisplayMode mode{};
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+        if (SDL_GetClosestFullscreenDisplayMode(display, width_, height_, 0.0f, true, &mode) &&
+            SDL_SetWindowFullscreenMode(window, &mode)) {
+            std::printf("Window: exclusive fullscreen %dx%d @ %.2f Hz\n", mode.w, mode.h,
+                        mode.refresh_rate);
+        } else {
+            std::printf("Window: exclusive mode unavailable (%s); borderless fullscreen\n",
+                        SDL_GetError());
+        }
+        SDL_SetWindowFullscreen(window, true);
+        SDL_SyncWindow(window);
+    }
 
     const char* driver = SDL_GetCurrentVideoDriver();
     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
