@@ -226,6 +226,8 @@ void Menu() {
     Hint("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.");
     Checkbox("Câmera livre nas cutscenes (modo foto)", s.photo_camera);
     Hint("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.");
+    Checkbox("Faixas pretas 2.40:1 do PS4", s.letterbox);
+    Hint("Mostra só as 800 linhas centrais, como no console (140 px pretos em cima e embaixo, cobrindo também o HUD nessas faixas). Aplicado na hora.");
     Checkbox("Carregamento acelerado", s.fast_loading);
     Hint("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.");
 

@@ -105,6 +105,7 @@ struct Values {
     std::atomic<bool> photo_camera{true};        ///< free photo camera in cutscenes
     std::atomic<bool> fast_loading{true};        ///< compute pipe parts ade + command pipe
     std::atomic<unsigned> fps_limit{60};         ///< 30/60/90/120; F9 cycles it, applied live
+    std::atomic<bool> letterbox{false};          ///< PS4 2.40:1 black bars (live, opt-in)
     int startup_order_aa = OrderAaQuality;
     int startup_order_resolution = 1080;
     int startup_game_language = 17;
