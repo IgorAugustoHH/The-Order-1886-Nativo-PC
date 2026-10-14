@@ -1284,6 +1284,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                      dma_data->dst_sel == DmaDataDst::MemoryUsingL2)) {
                     rasterizer->NotePendingGpuWrite(dma_data->DstAddress<VAddr>(),
                                                     dma_data->NumBytes());
+                    // bbport (BB_COMPUTE_PIPE): an immediate-data fill of a small label is a
+                    // known value: waits on it need not drain the pipe.
+                    if (ComputePipeOn() && dma_data->src_sel == DmaDataSrc::Data &&
+                        (dma_data->NumBytes() == 4 || dma_data->NumBytes() == 8)) {
+                        const u64 value = u64(dma_data->data) | (u64(dma_data->data) << 32);
+                        pending_fences.push_back({dma_data->DstAddress<VAddr>(), value,
+                                                  dma_data->NumBytes(),
+                                                  rasterizer->DrawPipeHead()});
+                    }
                 }
                 break;
             }
@@ -1391,6 +1400,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
                         drained = true;
+                        static u64 drains_total = 0, drains_satisfied = 0;
+                        ++drains_total;
+                        drains_satisfied += wait_reg_mem->Test(regs.reg_array) ? 1 : 0;
+                        if (drains_total % 20000 == 0) {
+                            std::printf("WaitRegMem drains satisfied by the pipe itself: %llu of "
+                                        "%llu\n",
+                                        (unsigned long long)drains_satisfied,
+                                        (unsigned long long)drains_total);
+                        }
                         continue;
                     }
                     YIELD_GFX();
