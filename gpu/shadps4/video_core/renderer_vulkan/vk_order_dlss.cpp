@@ -284,7 +284,12 @@ bool OrderDlss::Replace(std::span<const VideoCore::ImageId> images, std::span<co
         info.format = depth.info.pixel_format;
         const auto d = scene_targets.Read(scene_depth, info);
         color_in = c.view;
-        // The native velocity (single-sample, resolved from its 2x proxy when bound above).
+        // The native velocity (single-sample): the resolve's binding skipped proxy resolves
+        // (Rasterizer::DispatchRecord), so this transition resolves its 2x proxy now.
+        runtime.Transit(&velocity, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
         velocity_in =
             TempView(velocity, velocity.info.pixel_format, vk::ImageAspectFlagBits::eColor);
         depth_in = d.view;

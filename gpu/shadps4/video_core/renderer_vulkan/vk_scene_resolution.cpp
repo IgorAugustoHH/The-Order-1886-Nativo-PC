@@ -149,7 +149,7 @@ void SceneTargets::ResolveAll() {
     }
 }
 void SceneTargets::NativeAccess(VideoCore::Image& image, vk::AccessFlags2 access) {
-    if (copying || !image.scene_proxy) return; // most images never had a proxy
+    if (copying || suspend_native || !image.scene_proxy) return; // most images never had a proxy
     constexpr auto writes = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite |
         vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
         vk::AccessFlagBits2::eMemoryWrite;

@@ -1676,7 +1676,14 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         return;
     }
 
-    if (!BindResources(pipeline)) {
+    // The Order: the resolve DLSS replaces reads the reduced proxies; binding it must not
+    // first rebuild the full-size scene color (a 1080p 2x MSAA RGBA16F copy per frame).
+    const bool order_resolve = order_dlss->Scaling() && order_dlss->SceneOpen() &&
+                               OrderDlss::IsResolve(cs.pgm_hash);
+    scene_targets->suspend_native = order_resolve;
+    const bool bound = BindResources(pipeline);
+    scene_targets->suspend_native = false;
+    if (!bound) {
         return;
     }
 

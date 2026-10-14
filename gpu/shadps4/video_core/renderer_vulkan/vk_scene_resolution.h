@@ -74,6 +74,9 @@ public:
     /// bbport (The Order): multisampled scene targets (D32, float/unorm color) get proxies too,
     /// copied sample by sample (MsResample).
     bool allow_msaa = false;
+    /// The Order: native accesses skip the proxy resolve (the temporal resolve dispatch that
+    /// OrderDlss replaces binds the full-size MSAA scene color, but DLSS reads the proxies).
+    bool suspend_native = false;
 private:
     struct Entry {
         VideoCore::ImageId source{};
