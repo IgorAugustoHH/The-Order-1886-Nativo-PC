@@ -375,13 +375,12 @@ void RunComputeReleaseMem(Vulkan::Rasterizer& rasterizer, const u8* data) {
             },
             [](VAddr, u16, u16) { UNREACHABLE_MSG("GDS release handed to the draw pipe"); });
     };
-    if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
-        rasterizer.SignalAfterHostCopies(signal);
-    } else {
-        rasterizer.WaitHostCopies();
-        rasterizer.WaitDeferredSignals();
-        signal();
-    }
+    // Written as soon as the recording thread reaches it: deferring it to the Vulkan recording
+    // thread (SignalAfterHostCopies, as graphics fences do) hung loading screens, where the
+    // guest submits nothing more until this compute label is written.
+    rasterizer.WaitHostCopies();
+    rasterizer.WaitDeferredSignals();
+    signal();
 }
 
 /// BB_COMPUTE_PIPE=1: compute packets that only reach memory through the draw pipe (registers,
