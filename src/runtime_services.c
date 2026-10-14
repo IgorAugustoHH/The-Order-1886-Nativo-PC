@@ -12,6 +12,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -71,7 +72,14 @@ static ABI int32_t user_event(int32_t *event) {
 }
 
 /* ---- SystemService ---- */
-static int language(void) { const char *v=getenv("BB_LANGUAGE"); return v ? atoi(v) : 1; }
+static int language(void) {
+    const char *v=getenv("BB_LANGUAGE");
+    int selected=v ? atoi(v) : 1;
+    static atomic_flag noted=ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&noted))
+        fprintf(stderr,"SystemService: game language=%d (BB_LANGUAGE; game assets determine available text/audio)\n",selected);
+    return selected;
+}
 static ABI int32_t system_param(int32_t id,int32_t *value) {
     if (!value) return SYSTEM_PARAMETER;
     switch (id) {
