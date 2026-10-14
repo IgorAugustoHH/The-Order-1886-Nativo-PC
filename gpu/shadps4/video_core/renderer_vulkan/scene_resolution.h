@@ -19,7 +19,7 @@ inline Size GameSize() {
         const char* env = std::getenv("BB_ORDER_RESOLUTION");
         const int lines = env ? std::atoi(env) : 0;
         return lines == 2160 ? Size{3840, 2160}
-             : lines == 1080 ? Size{1920, 1080} : Size{1280, 720};
+             : lines == 1080 || (env && env[0] == 'r') ? Size{1920, 1080} : Size{1280, 720};
     }();
     return size;
 }

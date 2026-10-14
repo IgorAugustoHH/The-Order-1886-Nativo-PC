@@ -23,6 +23,14 @@ WRITES_2160 = [
     (0x44cf38, bytes.fromhex('f6 c4 01 74 3e'), bytes.fromhex('f6 c4 01 eb 3e')),  # skip 1080p
     (0x44cf7b, bytes.fromhex('f6 c4 02 74 46'), bytes.fromhex('f6 c4 02 90 90')),  # 3840x2160
 ]
+# BB_ORDER_RESOLUTION=retail (test): this dump's eboot carries illusion0001's GoldHEN patches
+# "Resolution Patch (720p)" (the default branch's 1280x720 at 0x44cefd/0x44cf07) and "16:9
+# Aspect Ratio" (1.7778f at 0x44ce8c; his note: native 1080p then has visual issues). Restore
+# the retail values in memory: the default branch at 1920x1080 and the 2.40:1 camera (the PS4's
+# 1920x800 picture).
+RETAIL_ASPECT = (0x44ce86, bytes.fromhex('c7 85 18 fc ff ff 39 8e e3 3f'), 2.4)
+RETAIL_SIZE = [(0x44cef7, bytes.fromhex('c7 85 84 fc ff ff 00 05 00 00'), 1920),
+               (0x44cf01, bytes.fromhex('c7 85 88 fc ff ff d0 02 00 00'), 1080)]
 RECT_Y = (0x44cf5b, bytes.fromhex('c7 85 d4 fb ff ff 00 00 00 00'))  # -0x42c(%rbp)
 
 
@@ -38,6 +46,23 @@ def elf_offset(elf, target, length):
 
 
 def resolution_writes(elf, mode):
+    if mode == 'retail':
+        if hashlib.sha256(elf).hexdigest() != ELF_SHA256:
+            raise ValueError('Resolucao: eboot diferente da imagem analisada (CUSA00785 01.02)')
+        out = []
+        target, original, aspect = RETAIL_ASPECT
+        start = elf_offset(elf, target, len(original))
+        if elf[start:start + len(original)] != original:
+            raise ValueError(f'Resolucao: proporcao original diverge em {target:#x}')
+        out.append((target + 6, struct.pack('<f', aspect)))
+        for target, original, value in RETAIL_SIZE:
+            start = elf_offset(elf, target, len(original))
+            if elf[start:start + len(original)] != original:
+                raise ValueError(f'Resolucao: tamanho padrao diverge em {target:#x}')
+            out.append((target + 6, struct.pack('<I', value)))
+        print('The Order: valores de varejo restaurados (1920x1080, camera 2.40:1; sem os patches '
+              '720p/16:9 do eboot) - TESTE')
+        return out
     if mode not in ('1080', '2160'):
         raise ValueError(f'BB_ORDER_RESOLUTION: modo nao suportado: {mode}')
     if hashlib.sha256(elf).hexdigest() != ELF_SHA256:
