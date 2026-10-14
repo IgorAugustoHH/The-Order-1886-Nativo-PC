@@ -175,15 +175,17 @@ void Menu() {
                                      "DLSS Ultra Desempenho"};
     int order_aa = s.order_aa;
     if (ImGui::BeginCombo("Anti-aliasing", aa_modes[order_aa])) {
+        // Not gated on dlss_supported: that is reported by the generic upscaler, which the
+        // TOport leaves off (BB_UPSCALER=none). Without the DLSS DLLs the game's TAA stays.
         for (int i = 0; i < BbSettings::OrderAaCount; ++i) {
-            const bool supported = i == BbSettings::OrderAaGame || s.dlss_supported.load();
-            ImGui::BeginDisabled(!supported);
             if (ImGui::Selectable(aa_modes[i], i == order_aa)) {
                 Store(s.order_aa, i, true);
             }
-            ImGui::EndDisabled();
         }
         ImGui::EndCombo();
+    }
+    if (order_aa != BbSettings::OrderAaGame && s.dlss_problem.load()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", s.dlss_problem.load());
     }
     Hint("DLSS substitui a resolução temporal do próprio jogo (NVIDIA RTX). Os modos abaixo de DLAA renderizam a cena em resolução menor e reconstroem para a saída. Reinicie para aplicar.");
     static const char* resolutions[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080"};
