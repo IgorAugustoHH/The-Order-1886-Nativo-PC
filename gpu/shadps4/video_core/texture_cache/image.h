@@ -181,6 +181,14 @@ public:
         UniqueImage image;
         State state;
         std::vector<State> subresource_states;
+        /// bbport: the last partial transition (range, layout, access, stage) while it still
+        /// holds: repeating it (the same view bound every draw, e.g. one mip of a 1024-layer
+        /// array) skips the per-subresource loop. Cleared by any other transition.
+        bool partial_memo_valid = false;
+        SubresourceRange partial_memo_range{};
+        vk::ImageLayout partial_memo_layout{};
+        vk::AccessFlags2 partial_memo_access{};
+        vk::PipelineStageFlags2 partial_memo_stage{};
         boost::container::small_vector<ImageViewInfo, 4> image_view_infos;
         boost::container::small_vector<ImageViewId, 4> image_view_ids;
         u32 last_view = 0; ///< bbport: index of the view FindView returned last
