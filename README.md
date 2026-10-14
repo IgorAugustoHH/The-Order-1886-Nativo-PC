@@ -1,65 +1,74 @@
-# The-Order-1886-Nativo-PC
+# The-Order-1886-Nativo-PC — TOport
 
-Port nativo e experimental do **The Order: 1886** (PS4, CUSA00785) para Windows, construído em cima do
-[BBPort](https://github.com/Supermedo/bloodborne_pc), o port nativo do Bloodborne.
+Port nativo do **The Order: 1886** (PS4, CUSA00785) para Windows, construído em cima do
+[BBPort](https://github.com/Supermedo/bloodborne_pc), o port nativo do Bloodborne. O nome do
+projeto é **TOport**.
 
 O código do jogo (x86-64, igual ao do PC) roda direto no processador, sem emulação de CPU. Só o que
 muda entre PS4 e PC é traduzido: as funções do sistema da Sony (reescritas num runtime pequeno) e a GPU
 (comandos GNM e shaders traduzidos para Vulkan pelo núcleo de vídeo do shadPS4).
 
 **Nenhum arquivo do jogo está neste repositório.** É preciso um dump próprio, descriptografado, do
-CUSA00785 (testado na versão 1.02).
+CUSA00785 (versão 1.02).
 
-## Estado (pré-lançamento, 10/10/2026)
-O jogo é **jogável nos trechos testados**, sem crash: abertura, cela, masmorra, becos e
-pátios de Londres, cutscenes e combate. Iluminação do sol e sombras em cascata funcionam como no PS4.
-Versão de referência: tag `versao-60fps-2026-10-09`, launcher `the-order/JOGAR_60FPS.bat`.
+## Estado (pré-lançamento, 14/10/2026)
+O jogo **roda do começo ao fim dos trechos testados, sem crash**, com cutscenes, combate e
+exploração de Londres funcionando. Com um save de jogo completo, **todos os capítulos estão sendo
+testados** agora pela seleção de capítulos, e cada nova área confirma a base.
 
-### Desempenho medido (maior sessão: run114, ~30 min, várias áreas, cache de shaders vazio)
-PC de teste: Intel i5-10400F, RTX 2060 6 GB, 16 GB de RAM, 1080p, limite de 120 FPS.
+### O que já funciona
+- **Modo Original do PS4 (padrão):** a câmera cinematográfica 2.40:1 do jogo, com as faixas pretas
+  nativas e a cena em 1920x800, exatamente como no console. Descobrimos que o executável do dump
+  trazia embutidos os patches "720p" e "16:9" do illusion0001; o TOport restaura os valores
+  originais na memória (sem tocar nos arquivos). Com isso **a iluminação global ficou muito mais
+  estável** (o telhado, um dos pontos mais difíceis, ficou 100% correto). As opções 16:9 em tela
+  cheia continuam disponíveis.
+- **NVIDIA DLSS no lugar da resolução temporal do próprio jogo:** DLAA, Qualidade, Equilibrado,
+  Desempenho e Ultra Desempenho, todos funcionando sobre a cena 2.40 (preset K).
+- **Carregamento acelerado:** filas de compute e de leitura sem esperas desnecessárias. As esperas do
+  fluxo de desenho caíram de ~4.600 para ~1.700 por segundo e as esperas por sinal de ~170 para ~53,
+  **sem perder nenhuma textura ou objeto da cena**. Texturas e iluminação chegam bem mais rápido.
+- **CPU:** trava de leitura/escrita (SRW) na tabela de memória, +25-30% de desenhos por segundo.
+- **Rostos:** correções específicas para os pontos pretos nos rostos dos personagens já mapeados
+  (Grayson, cena da cela, cutscenes); os demais estão sendo mapeados durante a varredura.
+- **Pré-carga de shaders:** ao abrir, o jogo já monta os shaders usados nas duas últimas sessões.
+- **Idiomas:** os 23 idiomas do sistema do PS4, com português do Brasil por padrão.
+- **Câmera livre nas cutscenes** (modo foto) e limite de quadros 30/60/90/120 (F9).
 
-| Métrica | Valor |
+### Desempenho (i5-10400F, RTX 2060 6 GB, 16 GB de RAM)
+| Configuração | Cenas pesadas |
 |---|---|
-| FPS médio / mediano | 72,8 / 67,4 |
-| 10% piores janelas de 5 s | 43 FPS ou menos (mínimo 30) |
-| Pior quadro | 710 ms (sempre durante compilação de shaders) |
-| Compilações de shader na sessão | 10.481 |
-| VRAM (pico) | 4,1 de 5,2 GB disponíveis |
-| RAM livre mínima | 2,6 GB (o jogo usa ~5 GB) |
-| Crashes | nenhum |
+| Original + TAA do jogo | ~45–50 FPS |
+| Original + DLSS Qualidade | ~40–45 FPS (modos mais baixos sobem mais) |
+| 16:9 1080p + DLSS Qualidade (base fiel anterior) | ~44 FPS |
 
-Segunda sessão, com o cache montado (run115, ~11 min): FPS mediano 90, 10% piores em 53.
-A primeira visita a cada área tem travadinhas e luz "se ajeitando" enquanto os shaders compilam.
+A primeira visita a cada área ainda compila shaders (travadinhas curtas); da segunda vez em diante o
+cache e a pré-carga deixam tudo mais suave.
 
-### Qualidade visual
-- Correto: luz do sol, sombras, texturas, materiais, nevoeiro, cutscenes, interface.
-- Problemas conhecidos (em tratamento):
-  - pontos pretos hexagonais no rosto de personagens masculinos (suspeita: bokeh do desfoque de profundidade);
-  - personagens escuros em parte da cutscene da cela;
-  - triângulos de geometria "explodida" em alguns objetos e sombras (masmorra);
-  - partículas e folhas brancas;
-  - fumaça da granada com defeito;
-  - granulado em fachadas distantes (pode ser o grão de filme do próprio jogo).
-- Desempenho em tratamento: só 2 threads compilam shaders; um shader de material gera centenas de variações.
-
-Lista técnica completa: [`the-order/PASSAGEM_PARA_AUXILIADOR.md`](the-order/PASSAGEM_PARA_AUXILIADOR.md).
-Histórico: [`the-order/PROJETO.md`](the-order/PROJETO.md).
+### Em andamento
+- Varredura capítulo por capítulo com o save completo: piscadas de iluminação que restam em algumas
+  áreas e rostos com pontos pretos ainda não mapeados.
+- Uma cutscene com sincronia a revisar e um detalhe no início de uma cena.
+- 1440p e 4K: testados e ainda não suportados (artefatos), fora das opções por enquanto.
 
 ### Requisitos recomendados
-GPU Vulkan 1.3 com 6 GB de VRAM, 16 GB de RAM (feche navegador e apps pesados ao jogar; o port fecha
-sozinho se a RAM livre cair abaixo de 700 MB), CPU de 6 núcleos.
+GPU Vulkan 1.3 com 6 GB de VRAM (DLSS: NVIDIA RTX), 16 GB de RAM (feche navegador e apps pesados ao
+jogar; o port fecha sozinho se a RAM livre cair abaixo de 700 MB), CPU de 6 núcleos.
 
-## Compilar e rodar (Windows)
+## Jogar (TOport)
+1. Abra `TOport.exe` (pacote gerado por `packaging/windows/package_toport.sh`).
+2. Em "Jogo e idioma", aponte a pasta do seu dump (CUSA00785 1.02).
+3. Ajuste resolução (Original do PS4 recomendado), DLSS e idioma, e clique em **JOGAR**.
+
+No jogo: **Select** (controle) ou **Insert** (teclado) abre o menu do TOport; **F9** alterna o
+limite de quadros. Teclado: Espaço = ✕, Shift = ◯, E = □, Q = △, WASD = analógico esquerdo,
+setas = analógico direito, Enter = Options.
+
+## Compilar (Windows)
 1. MSYS2 com o ambiente CLANG64 e os pacotes listados em `packaging/windows/README.md`.
 2. `bash build.sh` (com `MSYS2_ROOT` apontando para o MSYS2, se não estiver em `C:\msys64`).
-3. `BB_GAME_DIR=<pasta do CUSA00785> python run.py`
-
-Para desenvolvimento, `the-order/iterar.sh` faz o ciclo completo: gera os nomes das funções,
-compila, roda o jogo, fecha e mostra onde parou. `the-order/JOGAR_60FPS.bat` (recomendado) e
-`the-order/JOGAR_THE_ORDER.bat` fazem o mesmo por duplo clique. F9 alterna 30/60/90/120 FPS.
-
-Teclado: Espaço = ✕, Shift = ◯, E = □, Q = △, WASD = analógico esquerdo, setas = analógico direito,
-Enter = Options.
+3. `bash packaging/windows/package_toport.sh` gera `dist/TOport/` e `dist/TOport.zip`.
+   Para desenvolvimento: `BB_GAME_DIR=<pasta do CUSA00785> python run.py`.
 
 ## Agradecimentos
 O TOport só existe porque outras pessoas abriram o caminho e publicaram o seu trabalho:
