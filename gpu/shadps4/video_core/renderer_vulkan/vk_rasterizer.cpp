@@ -2856,8 +2856,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         // Same as image_desc.NumBindings(stage), without fetching the T# again.
         const u32 num_bindings =
             mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex
-                ? static_cast<u32>(tsharp.last_level - tsharp.base_level + 1)
+                ? Shader::ImageResource::MaxMipBindings
                 : 1u;
+        const u32 real_mips = static_cast<u32>(tsharp.last_level - tsharp.base_level + 1);
         const bool proxy_candidate = sample_proxies && num_bindings == 1 &&
                                      !image_desc.needs_native && !image_desc.is_written &&
                                      mip_fallback_mode == Shader::MipStorageFallbackMode::None;
@@ -2910,7 +2911,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 desc.view_info.range.base.level += image_desc.constant_mip_index;
                 desc.view_info.range.extent.levels = 1;
             } else if (mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex) {
-                desc.view_info.range.base.level += i;
+                // Spare slots past the texture's mips repeat its last mip (never indexed).
+                desc.view_info.range.base.level += std::min<u32>(i, real_mips - 1);
                 desc.view_info.range.extent.levels = 1;
             }
 

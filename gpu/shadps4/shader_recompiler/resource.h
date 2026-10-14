@@ -165,11 +165,14 @@ struct ImageResource {
         return true;
     }
 
+    /// bbport: a dynamically indexed storage mip is a fixed array of MaxMipBindings views (the
+    /// rasterizer repeats the last real mip in the spare slots; the shader never indexes past
+    /// the texture's levels). Sizing it by the bound texture's mip count made one program per
+    /// combination of textures: The Order's compute 0x804aeead built 340-560 of them per
+    /// session, each compiled with the frame stopped (~200 ms stutters).
+    static constexpr u32 MaxMipBindings = 16;
     u32 NumBindings(const auto& info) const {
-        const AmdGpu::Image tsharp = GetSharp(info);
-        return (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex)
-                   ? (tsharp.last_level - tsharp.base_level + 1)
-                   : 1;
+        return (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex) ? MaxMipBindings : 1;
     }
 };
 using ImageResourceList = boost::container::static_vector<ImageResource, NUM_IMAGES>;
