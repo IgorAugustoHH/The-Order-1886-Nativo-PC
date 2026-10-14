@@ -153,6 +153,41 @@ void Hint(const char* text) {
     }
 }
 
+// TOport: The Order: 1886 settings only (no Bloodborne options). Choices are written to
+// bbport.ini when the menu closes; run.py applies the restart ones on the next start.
+bool OrderCheckbox(const char* id, const char* label, std::atomic<bool>& value) {
+    ImGui::PushID(id);
+    bool v = value.load();
+    const bool changed = ImGui::Checkbox(label, &v);
+    if (changed) {
+        value.store(v);
+        dirty = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+template <typename T, size_t N>
+void OrderCombo(const char* id, const char* label, std::atomic<T>& value,
+                const T (&values)[N], const char* const (&names)[N]) {
+    ImGui::PushID(id);
+    const T current = value.load();
+    const char* preview = "?";
+    for (size_t i = 0; i < N; ++i) {
+        if (values[i] == current) preview = names[i];
+    }
+    if (ImGui::BeginCombo(label, preview)) {
+        for (size_t i = 0; i < N; ++i) {
+            if (ImGui::Selectable(names[i], values[i] == current)) {
+                value.store(values[i]);
+                dirty = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
+}
+
 void Menu() {
     auto& s = BbSettings::Get();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -161,271 +196,59 @@ void Menu() {
                             ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(620.0f * base_scale, 0.0f), ImGuiCond_Appearing);
     bool keep_open = true;
-    if (!ImGui::Begin("The Order: 1886 — Configurações (Insert / L3+R3)", &keep_open,
-                      ImGuiWindowFlags_NoCollapse)) {
+    if (!ImGui::Begin("The Order: 1886 — TOport (Insert / L3+R3)", &keep_open,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
     }
     ImGui::Text("%.0f FPS  (%.1f ms)", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
                 frame_ms_avg);
 
-    ImGui::SeparatorText("TOport");
-    static const char* aa_modes[] = {"TAA original do jogo", "DLSS DLAA (resolução nativa)",
-                                     "DLSS Qualidade", "DLSS Equilibrado", "DLSS Desempenho",
-                                     "DLSS Ultra Desempenho"};
-    int order_aa = s.order_aa;
-    if (ImGui::BeginCombo("Anti-aliasing", aa_modes[order_aa])) {
-        // Not gated on dlss_supported: that is reported by the generic upscaler, which the
-        // TOport leaves off (BB_UPSCALER=none). Without the DLSS DLLs the game's TAA stays.
-        for (int i = 0; i < BbSettings::OrderAaCount; ++i) {
-            if (ImGui::Selectable(aa_modes[i], i == order_aa)) {
-                Store(s.order_aa, i, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (order_aa != BbSettings::OrderAaGame && s.dlss_problem.load()) {
+    ImGui::SeparatorText("Imagem");
+    static const int aa_values[] = {BbSettings::OrderAaGame,        BbSettings::OrderAaDlaa,
+                                    BbSettings::OrderAaQuality,     BbSettings::OrderAaBalanced,
+                                    BbSettings::OrderAaPerformance, BbSettings::OrderAaUltra};
+    static const char* const aa_names[] = {"TAA original do jogo", "DLSS DLAA (resolução nativa)",
+                                           "DLSS Qualidade", "DLSS Equilibrado",
+                                           "DLSS Desempenho", "DLSS Ultra Desempenho"};
+    OrderCombo("aa", "Anti-aliasing", s.order_aa, aa_values, aa_names);
+    Hint("DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. Abaixo de DLAA, a cena é renderizada menor e reconstruída. Reinicie para aplicar.");
+    if (s.order_aa != BbSettings::OrderAaGame && s.dlss_problem.load()) {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", s.dlss_problem.load());
     }
-    Hint("DLSS substitui a resolução temporal do próprio jogo (NVIDIA RTX). Os modos abaixo de DLAA renderizam a cena em resolução menor e reconstroem para a saída. Reinicie para aplicar.");
-    static const char* resolutions[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080"};
-    int resolution = s.order_resolution == 720 ? 0 : 1;
-    if (ImGui::BeginCombo("Resolução do jogo", resolutions[resolution])) {
-        for (int i = 0; i < 2; ++i) {
-            if (ImGui::Selectable(resolutions[i], i == resolution)) {
-                Store(s.order_resolution, i ? 1080 : 720, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
+    static const int resolution_values[] = {720, 1080};
+    static const char* const resolution_names[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080"};
+    OrderCombo("res", "Resolução do jogo", s.order_resolution, resolution_values,
+               resolution_names);
     Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. Reinicie para aplicar.");
-    static const unsigned limits[] = {30, 60, 90, 120};
-    char limit_label[32];
-    std::snprintf(limit_label, sizeof(limit_label), "%u FPS", s.fps_limit.load());
-    if (ImGui::BeginCombo("Limite de quadros (F9)", limit_label)) {
-        for (const unsigned limit : limits) {
-            char label[32];
-            std::snprintf(label, sizeof(label), "%u FPS", limit);
-            if (ImGui::Selectable(label, limit == s.fps_limit.load())) {
-                Store(s.fps_limit, limit, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    Hint("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.");
-    const char* language_name = "?";
-    for (const auto& language : BbSettings::GameLanguages) {
-        if (language.code == s.game_language) language_name = language.name;
-    }
-    if (ImGui::BeginCombo("Idioma do jogo", language_name)) {
-        for (const auto& language : BbSettings::GameLanguages) {
-            if (ImGui::Selectable(language.name, language.code == s.game_language)) {
-                Store(s.game_language, language.code, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    Hint("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.");
-    Checkbox("Câmera livre nas cutscenes (modo foto)", s.photo_camera);
-    Hint("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.");
-    Checkbox("Faixas pretas 2.40:1 do PS4", s.letterbox);
+    OrderCheckbox("letterbox", "Faixas pretas 2.40:1 do PS4", s.letterbox);
     Hint("Mostra só as 800 linhas centrais, como no console (140 px pretos em cima e embaixo, cobrindo também o HUD nessas faixas). Aplicado na hora.");
-    Checkbox("Carregamento acelerado", s.fast_loading);
+
+    ImGui::SeparatorText("Desempenho");
+    static const unsigned fps_values[] = {30, 60, 90, 120};
+    static const char* const fps_names[] = {"30 FPS", "60 FPS", "90 FPS", "120 FPS"};
+    OrderCombo("fps", "Limite de quadros (F9)", s.fps_limit, fps_values, fps_names);
+    Hint("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.");
+    OrderCheckbox("fast", "Carregamento acelerado", s.fast_loading);
     Hint("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.");
 
-    ImGui::SeparatorText("Reconstrução temporal da imagem");
-    if (const char* option = std::getenv("BB_ORDER_LIVE_OPTIONS"); option && option[0] == '1') {
-        ImGui::TextWrapped("Estado real: %s", s.temporal_status.load());
-        ImGui::Text("Quadros com reconstrução gravada: %llu", s.temporal_recorded.load());
-        Hint("DLSS e FSR temporais estão habilitados para teste com a integração herdada. Selecionar um modo não garante que o jogo tenha fornecido todas as entradas.");
+    ImGui::SeparatorText("Jogo");
+    static int language_values[std::size(BbSettings::GameLanguages)];
+    static const char* language_names[std::size(BbSettings::GameLanguages)];
+    for (size_t i = 0; i < std::size(BbSettings::GameLanguages); ++i) {
+        language_values[i] = BbSettings::GameLanguages[i].code;
+        language_names[i] = BbSettings::GameLanguages[i].name;
     }
-    static const char* upscalers[] = {"Desligado", "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
-                                     "TAA (suavização nativa)", "DLSS (NVIDIA RTX)"};
-    static const char* later[] = {"XeSS"};
-    int upscaler = s.upscaler;
-    if (ImGui::BeginCombo("Reconstrução de imagem", upscalers[upscaler])) {
-        for (int i = 0; i < BbSettings::UpscalerCount; ++i) {
-            const bool supported = i == BbSettings::UpscalerFsr4 ? s.fsr4_supported.load()
-                : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
-                : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load() : true;
-            ImGui::BeginDisabled(!supported);
-            if (ImGui::Selectable(upscalers[i], i == upscaler)) {
-                Store(s.upscaler, i, true);
-            }
-            ImGui::EndDisabled();
-            if (!supported) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("— indisponível nesta configuração");
-            }
-        }
-        for (const char* name : later) {
-            ImGui::BeginDisabled();
-            ImGui::Selectable(name, false);
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::TextDisabled("— em desenvolvimento");
-        }
-        ImGui::EndCombo();
-    }
-    if (const char* problem = s.dlss_problem.load(); problem && upscaler == BbSettings::UpscalerDlss) {
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", problem);
-    }
-    if (const char* problem = s.fsr4_problem.load()) {
-        ImGui::PushTextWrapPos();
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "FSR 4 indisponível: %s", problem);
-        if (!BbSettings::IsFsr4(s.upscaler))
-            ImGui::TextUnformatted("O modo selecionado acima está ativo. Você pode selecionar FSR 4 novamente.");
-        ImGui::PopTextWrapPos();
-    }
-    if (BbSettings::IsFsr4(s.upscaler)) {
-        if (s.upscaler == BbSettings::UpscalerFsr411) {
-            Hint("FSR 4.1.1 em INT8. A reconstrução pode melhorar detalhes, com custo adicional na GPU. Os recursos necessários precisam estar instalados.");
-        } else {
-            Hint("FSR 4 em INT8. Tem custo adicional na GPU. A troca de qualidade pode causar uma pausa curta. Os recursos necessários precisam estar instalados.");
-        }
-        Checkbox("FSR 4: exposição automática", s.fsr4_auto_exposure);
-        Checkbox("FSR 4: inverter deslocamento de amostragem", s.fsr4_invert_jitter);
-        Hint("A exposição influencia o uso de quadros anteriores. Estas opções ajudam a investigar rastros na imagem e são aplicadas sem reiniciar.");
-    }
-    const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff;
-    const bool taa = s.upscaler == BbSettings::UpscalerTaa;
-    ImGui::BeginDisabled(!upscaler_on);
-    ImGui::BeginDisabled(taa);
-    int preset = taa ? BbSettings::NativeAA : s.preset.load();
-    char preset_label[64];
-    std::snprintf(preset_label, sizeof(preset_label), "%s (x%.1f)", BbSettings::PresetName(preset),
-                  BbSettings::PresetScale(preset));
-    if (ImGui::BeginCombo("Qualidade", preset_label)) {
-        for (int i = 0; i < BbSettings::PresetCount; ++i) {
-            char label[64];
-            const float scale = BbSettings::PresetScale(i);
-            const int output = s.output_res;
-            std::snprintf(label, sizeof(label), "%s (x%.1f, cena %dx%d)",
-                          BbSettings::PresetName(i), scale,
-                          int(std::lround(BbSettings::OutputWidths[output] / scale / 2) * 2),
-                          int(std::lround(BbSettings::OutputHeights[output] / scale / 2) * 2));
-            if (ImGui::Selectable(label, i == preset)) {
-                Store(s.preset, i, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (taa) {
-        ImGui::TextWrapped("TAA suaviza a cena na resolução de saída. A qualidade de reconstrução salva volta ao selecionar FSR.");
-    }
-    ImGui::Text("Resolução atual da cena: %d x %d", s.active_render_width.load(),
-                s.active_render_height.load());
-    if (BbSettings::FixedRenderSession()) {
-        ImGui::Text("Qualidade na inicialização: %s", BbSettings::PresetName(s.startup_preset));
-        if (const char* automatic = std::getenv("BB_AUTO_RENDER_RES");
-            automatic && automatic[0] == '1') {
-            Hint("Neste modo, qualidade e resolução são definidas ao iniciar. Reinicie para aplicar alterações. A opção de resolução dinâmica permite alterações em tempo real, com custo adicional.");
-        } else {
-            Hint("A resolução da cena foi fixada na inicialização. Mudanças exigem reiniciar com a configuração correspondente.");
-        }
-    } else {
-        Hint("AA nativo mantém a resolução da cena. As outras qualidades renderizam menos pixels e reconstroem a imagem. O suporte depende da integração com este jogo.");
-    }
-    Checkbox("Nitidez (RCAS)", s.sharpen);
-    ImGui::BeginDisabled(!s.sharpen);
-    Slider("Intensidade da nitidez", s.sharpness, 0.0f, 2.0f);
-    Hint("Acima de 1, adiciona uma segunda etapa de nitidez. Ctrl+clique permite digitar um valor exato.");
-    ImGui::EndDisabled();
-    Checkbox("Deslocamento de amostragem (jitter)", s.jitter);
-    Hint("Desloca a amostragem uma fração de pixel entre quadros para reconstruir detalhes. Requer uma integração correta com a câmera do jogo.");
+    OrderCombo("lang", "Idioma do jogo", s.game_language, language_values, language_names);
+    Hint("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.");
+    OrderCheckbox("photo", "Câmera livre nas cutscenes (modo foto)", s.photo_camera);
+    Hint("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.");
 
-    ImGui::SeparatorText("Máscara de transparências");
-    ImGui::BeginDisabled(taa);
-    Checkbox("Ativar máscara", s.reactive);
-    Hint("Identifica partículas e transparências para reduzir rastros de quadros anteriores. Pode aumentar a oscilação da imagem nessas regiões.");
-    ImGui::BeginDisabled(!s.reactive);
-    Slider("Intensidade", s.reactive_scale, 0.0f, 4.0f);
-    Slider("Limiar", s.reactive_threshold, 0.0f, 1.0f);
-    Slider("Máximo", s.reactive_max, 0.0f, 1.0f);
-    bool show_mask = s.debug_view == BbSettings::DebugReactive;
-    if (ImGui::Checkbox("Visualizar máscara (diagnóstico)", &show_mask)) {
-        s.debug_view = show_mask ? BbSettings::DebugReactive : BbSettings::DebugNone;
-    }
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    Checkbox("Movimento de personagens", s.object_motion);
-    Hint("Usa vetores de movimento de objetos animados quando disponíveis. Depende da integração com o jogo. Reinicie para aplicar.");
-    bool show_motion = s.debug_view == BbSettings::DebugMotion;
-    if (ImGui::Checkbox("Visualizar vetores de movimento (diagnóstico)", &show_motion)) {
-        s.debug_view = show_motion ? BbSettings::DebugMotion : BbSettings::DebugNone;
-    }
-    Hint("Vermelho e verde mostram movimento horizontal e vertical. Azul indica um vetor de objeto. Vetores ausentes podem causar rastros na reconstrução.");
-    ImGui::EndDisabled(); // upscaler off
+    ImGui::SeparatorText("Tela");
+    OrderCheckbox("showfps", "Mostrar FPS no canto", s.show_fps);
 
-    ImGui::SeparatorText("Resolução de saída");
-    if (const char* option = std::getenv("BB_ORDER_LIVE_OPTIONS"); option && option[0] == '1') {
-        Checkbox("FSR 1 espacial na saída", s.spatial_fsr1);
-        Checkbox("Nitidez do FSR 1 espacial", s.sharpen);
-        Slider("Intensidade da nitidez espacial", s.sharpness, 0.0f, 2.0f);
-        ImGui::Text("FSR 1: %s | quadros gravados: %llu",
-                    s.spatial_active ? "ativo" : "sem ampliação neste quadro", s.spatial_recorded.load());
-        Hint("Amplia a imagem final, incluindo textos. Funciona quando a resolução de saída é maior que a imagem do jogo. Não reduz a resolução interna da cena.");
-    }
-    static const char* outputs[] = {"1280 x 720", "1920 x 1080", "2560 x 1440", "3840 x 2160"};
-    int output = s.output_res;
-    if (ImGui::BeginCombo("Resolução de saída", outputs[output])) {
-        for (int i = 0; i < BbSettings::OutputCount; ++i) {
-            if (ImGui::Selectable(outputs[i], i == output)) {
-                Store(s.output_res, i, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (BbSettings::FixedRenderSession()) {
-        Hint("Tamanho da imagem final e da interface. A qualidade define a resolução da cena. Reinicie para aplicar.");
-    } else {
-        Hint("Altera a imagem final e a interface no próximo quadro. A troca reinicia o histórico temporal e pode causar uma pausa curta.");
-    }
-    static const char* live_modes[] = {"Automática (conforme a GPU)", "Desativada", "Ativada"};
-    int live = s.live_resolution + 1;
-    if (ImGui::BeginCombo("Troca de resolução em tempo real", live_modes[live])) {
-        for (int i = 0; i < 3; ++i) {
-            if (ImGui::Selectable(live_modes[i], i == live)) {
-                Store(s.live_resolution, i - 1, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    Hint("Ativada permite trocar qualidade e resolução em tempo real, com custo adicional de processamento. Desativada exige reiniciar. A alteração desta opção exige reiniciar.");
-    ImGui::SeparatorText("Efeitos legados do Bloodborne (após reiniciar)");
-    const char* order_mode = std::getenv("BB_ORDER_LIVE_OPTIONS");
-    const bool order = order_mode && order_mode[0] == '1';
-    ImGui::BeginDisabled(order);
-    static const char* lods[] = {"Máxima (-2)", "Padrão do jogo", "Reduzida (1)", "Mínima (2)"};
-    static constexpr int lod_values[] = {-2, 0, 1, 2};
-    int lod_index = 1;
-    for (int i = 0; i < 4; ++i) {
-        if (lod_values[i] == s.model_lod) lod_index = i;
-    }
-    if (ImGui::BeginCombo("Detalhamento dos modelos", lods[lod_index])) {
-        for (int i = 0; i < 4; ++i) {
-            if (ImGui::Selectable(lods[i], i == lod_index)) {
-                Store(s.model_lod, lod_values[i], true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        Checkbox(BbSettings::Effects[e].label, s.effects[e]);
-    }
-    Hint("Estas opções usam modificações do Bloodborne. Não estão adaptadas ao The Order: 1886 nesta versão.");
-    Hint("Os atalhos de câmera e de menu de diagnóstico desta seção pertencem ao Bloodborne. No The Order, use o modo foto do próprio jogo.");
-    ImGui::EndDisabled();
-
-    bool restart = s.object_motion != s.startup_object_motion ||
-                   s.model_lod != s.startup_model_lod ||
-                   s.live_resolution != s.startup_live_resolution ||
-                   BbSettings::ResolutionNeedsRestart() || BbSettings::OrderNeedsRestart();
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        restart |= s.effects[e] != s.startup_effects[e];
-    }
-    if (restart) {
+    if (BbSettings::OrderNeedsRestart()) {
+        ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
                            "As alterações serão aplicadas após reiniciar");
         if (ImGui::Button("Aplicar e reiniciar o jogo")) {
@@ -434,15 +257,12 @@ void Menu() {
         }
     }
 
-    ImGui::SeparatorText("Outras opções");
-    Checkbox("Mostrar FPS no canto", s.show_fps);
-
     ImGui::Spacing();
     if (ImGui::Button("Fechar")) {
         keep_open = false;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("As configurações são salvas automaticamente");
+    ImGui::TextDisabled("As configurações são salvas ao fechar o menu");
     ImGui::End();
     if (!keep_open) {
         SetOpen(false);

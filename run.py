@@ -117,6 +117,12 @@ def toport_environment(env, config):
     the renderer, patches.py and the runtime read."""
     if env.get('BB_TOPORT', '1') != '1':
         return
+    # "Apply and restart" runs this script again with the previous launch's environment: drop
+    # what this function set last time so the menu's new choices in bbport.ini win.
+    for key in env.pop('BB_TOPORT_KEYS', '').split(','):
+        if key:
+            env.pop(key, None)
+    before = set(env)
     if not Path(config).is_file():
         Path(config).parent.mkdir(parents=True, exist_ok=True)
         Path(config).write_text(TOPORT_INI, encoding='utf-8')
@@ -149,6 +155,7 @@ def toport_environment(env, config):
         env.setdefault('BB_COMPUTE_PIPE_PARTS', 'ade')
         env.setdefault('BB_COMMAND_PIPE', '1')
     env.setdefault('BB_FPS_LIMIT', setting('fps_limit', '60'))
+    env['BB_TOPORT_KEYS'] = ','.join(sorted(set(env) - before))
 
 
 def find_executable(name):
