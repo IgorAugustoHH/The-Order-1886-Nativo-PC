@@ -70,6 +70,9 @@ def run_role(argv):
     else:
         path = str(PORT_DIR / 'run.py')
         sys.argv = [path, *argv[1:]]
+    # As `python script.py`: the script's own folder first on the import path (scripts/ import
+    # each other, e.g. link_libc.py -> prepare.py).
+    sys.path.insert(0, str(Path(path).resolve().parent))
     try:
         runpy.run_path(path, run_name='__main__')
     except SystemExit as stop:
