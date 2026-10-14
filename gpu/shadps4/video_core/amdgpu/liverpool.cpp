@@ -91,18 +91,45 @@ Liverpool::~Liverpool() {
     process_thread.join();
 }
 
+namespace {
+/// BB_COMMAND_PIPE=1: readback commands run in order on the draw recording thread.
+bool CommandPipeOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_COMMAND_PIPE");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+void RunQueuedCommand(Vulkan::Rasterizer&, const u8* data) {
+    auto* command = *reinterpret_cast<Common::UniqueFunction<void>* const*>(data);
+    (*command)();
+    delete command;
+}
+} // namespace
+
 void Liverpool::ProcessCommands() {
-    if (num_commands && rasterizer) {
-        rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCommands); // bbport: commands touch the caches
-    }
     // Process incoming commands with high priority
+    bool drained = false;
     while (num_commands) {
         Common::UniqueFunction<void> callback{};
+        bool pipelined = false;
         {
             std::scoped_lock lk{submit_mutex};
-            callback = std::move(command_queue.front());
+            callback = std::move(command_queue.front().first);
+            pipelined = command_queue.front().second;
             command_queue.pop();
             --num_commands;
+        }
+        if (pipelined && rasterizer && CommandPipeOn()) {
+            // Runs inline when the pipe is off (RunInOrder drains first then).
+            auto* command = new Common::UniqueFunction<void>(std::move(callback));
+            rasterizer->RunInOrder(&RunQueuedCommand, &command, sizeof(command));
+            continue;
+        }
+        if (!drained && rasterizer) {
+            rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCommands); // bbport: commands touch the caches
+            drained = true;
         }
         callback();
     }

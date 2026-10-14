@@ -132,23 +132,25 @@ public:
         rasterizer = rasterizer_;
     }
 
-    template <bool wait_done = false>
+    /// pipelined (bbport, BB_COMMAND_PIPE=1): the command may run on the draw recording thread,
+    /// in order with the work handed to it, instead of draining that thread first.
+    template <bool wait_done = false, bool pipelined = false>
     void SendCommand(auto&& func) {
         if constexpr (wait_done) {
             std::binary_semaphore sem{0};
             {
                 std::scoped_lock lk{submit_mutex};
-                command_queue.emplace([&sem, &func] {
+                command_queue.emplace(Common::UniqueFunction<void>([&sem, &func] {
                     func();
                     sem.release();
-                });
+                }), pipelined);
                 ++num_commands;
                 submit_cv.notify_one();
             }
             sem.acquire();
         } else {
             std::scoped_lock lk{submit_mutex};
-            command_queue.emplace(std::move(func));
+            command_queue.emplace(Common::UniqueFunction<void>(std::move(func)), pipelined);
             ++num_commands;
             submit_cv.notify_one();
         }
@@ -277,7 +279,7 @@ private:
     std::atomic<bool> submit_done{};
     std::mutex submit_mutex;
     std::condition_variable_any submit_cv;
-    std::queue<Common::UniqueFunction<void>> command_queue{};
+    std::queue<std::pair<Common::UniqueFunction<void>, bool>> command_queue{};
     std::thread::id gpu_id;
 #if defined(__linux__) || defined(_WIN32)
     u32 gpu_tid{};
