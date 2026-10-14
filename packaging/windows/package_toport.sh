@@ -28,14 +28,15 @@ for module in argparse base64 collections hashlib json re shutil struct tempfile
     hidden+=(--hidden-import "$module")
 done
 out/pyenv/Scripts/python.exe -m PyInstaller --noconfirm --clean --log-level WARN --windowed \
-    --name TOport --distpath out/pyi-dist --workpath out/pyi-work --specpath out/pyi-work \
+    --name TOport --icon "$(cygpath -w "$PWD/launcher/toport.ico")" --distpath out/pyi-dist --workpath out/pyi-work --specpath out/pyi-work \
     --paths "$(cygpath -w "$PWD/scripts")" "${hidden[@]}" \
     "$(cygpath -w "$PWD/launcher/toport_launcher_win.py")"
 
 dest=out/stage/TOport
 rm -rf -- out/stage
-mkdir -p "$dest/bin"
+mkdir -p "$dest/bin" "$dest/launcher"
 cp -r out/pyi-dist/TOport/. "$dest/"
+cp launcher/toport.ico launcher/toport.png launcher/toport_256.png "$dest/launcher/"
 for exe in bb-probe.exe bb-gpu-capabilities.exe; do
     [[ -f out/$exe ]] && llvm-strip --strip-debug -o "$dest/bin/$exe" "out/$exe"
 done
