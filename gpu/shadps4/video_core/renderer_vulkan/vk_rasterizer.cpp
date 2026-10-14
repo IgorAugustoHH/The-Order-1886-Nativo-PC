@@ -3648,7 +3648,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         const auto proxy = pass_size.value_or(size);
         state.width = proxy.width;
         state.height = proxy.height;
-        target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
+        const auto game = SceneResolution::GameSize();
+        target_scale = {float(size.width) / float(game.width), float(size.height) / float(game.height)};
     }
     // bbport: MSAA sample positions the game sets (PA_SC_AA_SAMPLE_LOCS), not passed to Vulkan.
     // The Order: 1886 resolves 2x MSAA with customresolve_cs_msaa4x_temporal: does it alternate

@@ -66,7 +66,7 @@ OrderDlss::OrderDlss(const Instance& instance_, Scheduler& scheduler_,
     }
     if (const int preset = ModePreset()) {
         scaled = true;
-        scene_size = SceneResolution::ForPreset(preset, {1920, 1080});
+        scene_size = SceneResolution::ForPreset(preset, SceneResolution::GameSize());
         scene_targets.allow_msaa = true;
     }
     const auto device = instance.GetDevice();
@@ -103,7 +103,7 @@ OrderDlss::OrderDlss(const Instance& instance_, Scheduler& scheduler_,
     device.destroyShaderModule(module);
     std::printf("Order DLSS: on (replaces the temporal MSAA resolve; depth invert %d; scene %s)\n",
                 depth_invert ? 1 : 0,
-                scaled ? fmt::format("{}x{} -> 1920x1080", scene_size.width, scene_size.height)
+                scaled ? fmt::format("{}x{} -> {}x{}", scene_size.width, scene_size.height, SceneResolution::GameSize().width, SceneResolution::GameSize().height)
                              .c_str()
                        : "native (DLAA)");
 }

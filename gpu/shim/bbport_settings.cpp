@@ -69,7 +69,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
             }
         }
     } else if (key == "order_resolution") {
-        v.order_resolution = i == 720 ? 720 : 1080;
+        v.order_resolution = i == 720 || i == 1440 || i == 2160 ? i : 1080;
     } else if (key == "game_language") {
         for (const auto& language : GameLanguages) {
             if (language.code == i) {

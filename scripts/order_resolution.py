@@ -16,6 +16,11 @@ WRITES_1080 = [
 # movl $imm32, -0x428(%rbp) / -0x424(%rbp): the rectangle's width and height
 RECT_WIDTH = (0x44cf65, bytes.fromhex('c7 85 d8 fb ff ff 80 07 00 00'))
 RECT_HEIGHT = (0x44cf6f, bytes.fromhex('c7 85 dc fb ff ff 38 04 00 00'))
+# movl $imm32, -0x37c(%rbp) / -0x378(%rbp): the 1920x1080 branch's display size
+SIZE_WIDTH = (0x44cf3d, bytes.fromhex('c7 85 84 fc ff ff 80 07 00 00'))
+SIZE_HEIGHT = (0x44cf47, bytes.fromhex('c7 85 88 fc ff ff 38 04 00 00'))
+# BB_ORDER_RESOLUTION=1440/2160 (experimental): the same branch with other sizes.
+SIZES = {'1080': (1920, 1080), '1440': (2560, 1440), '2160': (3840, 2160)}
 RECT_Y = (0x44cf5b, bytes.fromhex('c7 85 d4 fb ff ff 00 00 00 00'))  # -0x42c(%rbp)
 
 
@@ -31,7 +36,7 @@ def elf_offset(elf, target, length):
 
 
 def resolution_writes(elf, mode):
-    if mode != '1080':
+    if mode not in SIZES:
         raise ValueError(f'BB_ORDER_RESOLUTION: modo nao suportado: {mode}')
     if hashlib.sha256(elf).hexdigest() != ELF_SHA256:
         raise ValueError('Resolucao: eboot diferente da imagem analisada (CUSA00785 01.02)')
@@ -41,7 +46,17 @@ def resolution_writes(elf, mode):
         if elf[start:start + len(original)] != original:
             raise ValueError(f'Resolucao: bytes originais divergem em {target:#x}')
         out.append((target, replacement))
-    print('The Order: resolucao forcada para 1920x1080 (2 escritas)')
+    width, height = SIZES[mode]
+    if mode != '1080':
+        for (target, original), value in ((SIZE_WIDTH, width), (SIZE_HEIGHT, height),
+                                          (RECT_WIDTH, width), (RECT_HEIGHT, height)):
+            start = elf_offset(elf, target, len(original))
+            if elf[start:start + len(original)] != original:
+                raise ValueError(f'Resolucao: instrucao de tamanho diverge em {target:#x}')
+            out.append((target + 6, struct.pack('<I', value)))
+        print(f'The Order: resolucao forcada para {width}x{height} (EXPERIMENTAL, {len(out)} escritas)')
+    else:
+        print('The Order: resolucao forcada para 1920x1080 (2 escritas)')
     rect = os.environ.get('BB_ORDER_SCENE_RECT')
     if rect:
         # WxH or WxH+Y (vertical offset, e.g. 1920x800+140 for the PS4's 2.40:1 letterbox).

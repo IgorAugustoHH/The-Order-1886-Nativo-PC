@@ -77,8 +77,9 @@ bool SceneTargets::ShaderResampled(const VideoCore::Image& image) const {
 // Half resolution needs a scene size that halves exactly: the proxy keeps the scene's factor,
 // so the shaders' FragCoord conversion (1920 / scene width) stays correct for it.
 static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scene) {
-    if (i.size.width == 1920 && i.size.height == 1080) return 1;
-    if (i.size.width == 960 && i.size.height == 540 && scene.width % 2 == 0 &&
+    const auto game = SceneResolution::GameSize();
+    if (i.size.width == game.width && i.size.height == game.height) return 1;
+    if (i.size.width == game.width / 2 && i.size.height == game.height / 2 && scene.width % 2 == 0 &&
         scene.height % 2 == 0 && !BbToggle::Disabled(BbToggle::SceneHalfRes)) {
         return 2;
     }
@@ -122,7 +123,9 @@ bool SceneTargets::MsCopyable(vk::Format format) const {
     }
 }
 bool SceneTargets::EligibleScene(const VideoCore::Image& image) const {
-    return image.info.size.width == 1920 && image.info.size.height == 1080 && Eligible(image);
+    const auto game = SceneResolution::GameSize();
+    return image.info.size.width == game.width && image.info.size.height == game.height &&
+           Eligible(image);
 }
 SceneResolution::Size SceneTargets::ProxySize(const VideoCore::Image& image, u32 level) const {
     const u32 div = std::max(1u, SizeDivisor(image.info, size));
