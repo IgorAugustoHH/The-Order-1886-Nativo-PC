@@ -1,0 +1,26 @@
+TOport — The Order: 1886 nativo para PC (base BBPort)
+=====================================================
+
+O que você precisa
+- O seu próprio dump de The Order: 1886 (CUSA00785, versão 01.02), com eboot.bin,
+  sce_sys, sce_module e os dados do jogo. Nenhum arquivo do jogo vem neste pacote.
+- Windows 10/11 64 bits, GPU com Vulkan 1.3. DLSS exige NVIDIA RTX.
+
+Como jogar
+1. Abra TOport.exe.
+2. Em "Jogo", clique em "Procurar…" e escolha a pasta do seu dump.
+3. Ajuste as opções e clique em JOGAR.
+
+Na primeira execução o jogo é preparado e os shaders são compilados enquanto você joga
+(pode haver pequenas travadas no começo). O cache fica na pasta "user" e é reaproveitado.
+Os shaders não são distribuídos: cada jogador gera os seus a partir da própria cópia.
+
+No jogo
+- Insert ou L3+R3: menu do TOport (anti-aliasing/DLSS, resolução, limite de quadros,
+  idioma, câmera livre nas cutscenes, carregamento acelerado).
+- F9: alterna o limite de quadros 30/60/90/120.
+
+Arquivos criados nesta pasta
+- bbport.ini: configurações (as mesmas do menu do jogo).
+- toport.json: pasta do jogo e modo de tela.
+- user\: saves e cache de shaders.  out\: jogo preparado.  last_run.log: registro.
