@@ -7,6 +7,7 @@ O jogo roda direto no processador do PC, sem emulação de CPU. Só o que muda e
 as funções do sistema da Sony e a GPU, cujos comandos e shaders viram Vulkan. Sem janela de emulador,
 sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR.
 
+**Versão atual: [v0.1.0](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases/tag/v0.1.0) (pré-lançamento)** ·
 **[⬇ Baixar a versão mais recente](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases/latest)**
 
 ![Londres vista do telhado, rodando nativo no PC](docs/screenshots/londres-telhado.jpg)
@@ -18,7 +19,8 @@ sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR
 *Capturas do TOport numa RTX 2060, modo Original do PS4 (2.40:1) com DLSS.*
 
 > **Nenhum arquivo do jogo vem incluído.** É preciso o seu próprio dump de **The Order: 1886**
-> (CUSA00785, versão 01.02), de uma cópia que você possui legalmente.
+> (CUSA00785), de uma cópia que você possui legalmente, **com a atualização 1.02 aplicada**
+> (versão do jogo **01.02**). O TOport confere a versão e recusa outras.
 
 ## Recursos
 - **Modo Original do PS4:** a câmera cinematográfica 2.40:1 com as faixas pretas nativas, exatamente
@@ -42,6 +44,8 @@ sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR
 | Original + DLSS Desempenho | até ~80 FPS |
 
 ## Requisitos
+- **The Order: 1886 (CUSA00785) atualizado para a versão 01.02**: o dump do jogo base com o
+  patch 1.02 já mesclado. As correções do executável só funcionam nessa versão.
 - Windows 10 ou 11, 64 bits.
 - GPU com Vulkan 1.3 e 6 GB de VRAM. DLSS exige NVIDIA RTX.
 - 16 GB de RAM e CPU de 6 núcleos.
@@ -51,7 +55,8 @@ sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR
 1. Baixe `TOport-v….zip` em **[Releases](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases/latest)**.
 2. Extraia em qualquer pasta (de preferência num SSD).
 3. Abra **`TOport.exe`**.
-4. Em **Jogo e idioma**, escolha a pasta do seu dump (a que tem `eboot.bin`).
+4. Em **Jogo e idioma**, escolha a pasta do seu dump **01.02** (a que tem `eboot.bin`). O launcher
+   mostra "✓ CUSA00785 · versão 01.02" quando estiver certo.
 5. Clique em **JOGAR**.
 
 Nada mais para instalar. A primeira vez prepara o jogo e compila os shaders enquanto você joga;
