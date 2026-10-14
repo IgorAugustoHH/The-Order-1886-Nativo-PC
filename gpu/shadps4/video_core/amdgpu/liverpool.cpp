@@ -1344,7 +1344,23 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 // Else the value may come from a fence that thread has yet to write: let it
                 // catch up before yielding to other queues.
                 bool drained = false;
+                // BB_COMPUTE_PIPE: the label may come from a compute queue that has not run yet;
+                // let the other queues run first (their labels become pending values) instead
+                // of draining the draw pipe for a value it will not write.
+                bool yielded = !ComputePipeOn();
                 while (!wait_reg_mem->Test(regs.reg_array)) {
+                    if (u32 value; ComputePipeOn() &&
+                                   wait_reg_mem->mem_space.Value() ==
+                                       PM4CmdWaitRegMem::MemSpace::Memory &&
+                                   PendingFenceValue(wait_reg_mem->Address<VAddr>(), value) &&
+                                   wait_reg_mem->TestValue(value)) {
+                        break;
+                    }
+                    if (!yielded) {
+                        yielded = true;
+                        YIELD_GFX();
+                        continue;
+                    }
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
                         drained = true;
