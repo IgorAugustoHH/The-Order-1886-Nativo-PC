@@ -66,6 +66,59 @@ def ini_value(path, key):
     return None
 
 
+# TOport (The Order: 1886): the configuration approved in testing (runs 147-161). Variables
+# already in the environment win (scripts, A/B tests).
+TOPORT_DEFAULTS = {
+    # Fixes from the helper's research (faces, particles, aim focus, 64-bit buffer loads).
+    'BB_ADDR64_LOADS': '1', 'BB_FACE_DEPTH_FIX': '1', 'BB_FACE_SECONDARY_FIX': '1',
+    'BB_FACE_CUTSCENE_FIX': '1', 'BB_PARTICLE_SRT_FIX': '1', 'BB_AIM_FOCUS_SYNC': '1',
+    'BB_CAPTURE_DOF_CONSTANTS': '1', 'BB_CAPTURE_FOCUS_DEPTH': '1',
+    # Guest memory and readbacks.
+    'BB_DIRECT_MEMORY_ACCESS': '1', 'BB_DMA_CLEAN_SKIP': '1', 'BB_DMA_SYNC_GENERATION': '1',
+    'BB_DEFERRED_READBACK': '1', 'BB_READBACK_MERGE': 'fixed', 'BB_COPY_GPU_BUFFERS': '0',
+    'BB_DEPTH_ALIAS_FIX': '0', 'BB_TOGGLES': '16384',
+    # Shaders and pipelines: compiled in the background, cached per game in user/cache.
+    'BB_ASYNC_PIPELINES': '1', 'BB_ASYNC_SHADERS': '1', 'BB_ASYNC_COMPUTE': '0',
+    'BB_GRAPHICS_SYNC': '0', 'BB_PIPELINE_CACHE': '1', 'BB_DRIVER_PIPELINE_CACHE': '0',
+    'BB_COMPILE_THREADS': '2', 'BB_COMPILE_FAIR_QUEUE': '0', 'BB_COMPILE_AGGRESSIVE': '0',
+    'BB_PRELOAD_PIPELINES': '0', 'BB_PRELOAD_BUDGET_MS': '0',
+    # Recording and presentation.
+    'BB_FRAMES_AHEAD': '2', 'BB_VK_RECORD_THREAD': '1', 'BB_VK_RECORD_THREADS': '1',
+    'BB_VK_SEGMENT_KB': '64', 'BB_ASYNC_SUBMIT': '0', 'BB_EMPTY_IMAGE_QUEUE_FAST': '0',
+    'BB_GC_IDLE_SECONDS': '0', 'BB_VMA_BLOCK_MB': '0', 'BB_VMA_DEDICATED_MB': '0',
+    'BB_VBLANK_HZ': '0', 'BB_FULLSCREEN': '1', 'BB_JITTER': '0', 'BB_OBJECT_MOTION': '0',
+    'BB_FRAME_STATS': '1',
+}
+
+
+def toport_environment(env, config):
+    """The Order settings of bbport.ini (launcher and Insert/L3+R3 menu) as the environment
+    the renderer, patches.py and the runtime read."""
+    if env.get('BB_TOPORT', '1') != '1':
+        return
+    setting = lambda key, default: ini_value(config, key) or default
+    for key, value in TOPORT_DEFAULTS.items():
+        env.setdefault(key, value)
+    aa = setting('order_aa', 'quality')
+    env.setdefault('BB_UPSCALER', 'off')
+    if aa == 'game':
+        env.setdefault('BB_ORDER_DLSS', '0')
+    else:
+        env.setdefault('BB_ORDER_DLSS', '1')
+        env.setdefault('BB_DLSS', '1')
+        if aa in ('quality', 'balanced', 'performance', 'ultra'):
+            env.setdefault('BB_ORDER_DLSS_MODE', aa)
+    if setting('order_resolution', '1080') == '1080':
+        env.setdefault('BB_ORDER_RESOLUTION', '1080')
+    env.setdefault('BB_LANGUAGE', setting('game_language', '17'))
+    env.setdefault('BB_ORDER_PHOTO_CAMERA_UNLOCK', setting('photo_camera', '1'))
+    if setting('fast_loading', '1') == '1':
+        env.setdefault('BB_COMPUTE_PIPE', '1')
+        env.setdefault('BB_COMPUTE_PIPE_PARTS', 'ade')
+        env.setdefault('BB_COMMAND_PIPE', '1')
+    env.setdefault('BB_FPS_LIMIT', setting('fps_limit', '60'))
+
+
 def find_executable(name):
     """bin/ (packaged), else out/ (built with build.sh)."""
     for candidate in (PORT / 'bin' / name, PORT / 'out' / name):
@@ -87,6 +140,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     env.setdefault('BB_CONFIG', str(data / 'bbport.ini'))
     config = env['BB_CONFIG']
+    toport_environment(env, config)
     if not env.get('BB_FSR411_DIR') and not (PORT / 'fsr4_411').is_dir() and (data / 'fsr4_411').is_dir():
         env['BB_FSR411_DIR'] = str(data / 'fsr4_411')
 
@@ -99,7 +153,7 @@ def main():
         if clang64.is_dir():
             env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
 
-    game = Path(env.get('BB_GAME_DIR', PORT.parent / 'CUSA03173'))
+    game = Path(env.get('BB_GAME_DIR', PORT.parent / 'CUSA00785'))
     if not (game / 'eboot.bin').is_file():
         fail(f'No eboot.bin in {game} (set BB_GAME_DIR).')
     original_game = game.resolve()

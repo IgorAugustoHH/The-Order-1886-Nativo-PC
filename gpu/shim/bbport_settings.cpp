@@ -62,6 +62,26 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.model_lod = std::clamp(i, -2, 2);
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
+    } else if (key == "order_aa") {
+        for (int m = 0; m < OrderAaCount; ++m) {
+            if (value == OrderAaName(m)) {
+                v.order_aa = m;
+            }
+        }
+    } else if (key == "order_resolution") {
+        v.order_resolution = i == 720 ? 720 : 1080;
+    } else if (key == "game_language") {
+        for (const auto& language : GameLanguages) {
+            if (language.code == i) {
+                v.game_language = i;
+            }
+        }
+    } else if (key == "photo_camera") {
+        v.photo_camera = i != 0;
+    } else if (key == "fast_loading") {
+        v.fast_loading = i != 0;
+    } else if (key == "fps_limit") {
+        v.fps_limit = i <= 30 ? 30u : i <= 60 ? 60u : i <= 90 ? 90u : 120u;
     } else if (key == "output_res") {
         for (int r = 0; r < OutputCount; ++r) {
             if (value == std::to_string(OutputWidths[r]) + "x" + std::to_string(OutputHeights[r])) {
@@ -130,6 +150,24 @@ void Load() {
     v.startup_model_lod = v.model_lod;
     v.startup_output_res = v.output_res;
     v.startup_live_resolution = v.live_resolution;
+    v.startup_order_aa = v.order_aa;
+    v.startup_order_resolution = v.order_resolution;
+    v.startup_game_language = v.game_language;
+    v.startup_photo_camera = v.photo_camera;
+    v.startup_fast_loading = v.fast_loading;
+}
+
+bool OrderNeedsRestart() {
+    const auto& v = Get();
+    return v.order_aa != v.startup_order_aa || v.order_resolution != v.startup_order_resolution ||
+           v.game_language != v.startup_game_language ||
+           v.photo_camera != v.startup_photo_camera || v.fast_loading != v.startup_fast_loading;
+}
+
+const char* OrderAaName(int mode) {
+    static constexpr const char* names[OrderAaCount] = {"game", "dlaa", "quality", "balanced",
+                                                        "performance", "ultra"};
+    return names[std::clamp(mode, 0, OrderAaCount - 1)];
 }
 
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411) {
@@ -207,6 +245,12 @@ void Save() {
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");
+    // TOport: read by run.py at start (environment for the renderer, patches and runtime).
+    std::fprintf(file,
+                 "order_aa=%s\norder_resolution=%d\ngame_language=%d\nphoto_camera=%d\n"
+                 "fast_loading=%d\nfps_limit=%u\n",
+                 OrderAaName(v.order_aa), v.order_resolution.load(), v.game_language.load(),
+                 int(v.photo_camera.load()), int(v.fast_loading.load()), v.fps_limit.load());
     std::fclose(file);
 }
 

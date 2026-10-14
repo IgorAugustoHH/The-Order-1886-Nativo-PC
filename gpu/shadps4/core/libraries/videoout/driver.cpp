@@ -603,6 +603,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // cutscenes may need 30 FPS; testing which ones).
     u32 frame_limit = EmulatorSettings.GetFrameLimit();
     BbSettings::Get().frame_limit.store(frame_limit);
+    if (frame_limit) {
+        BbSettings::Get().fps_limit.store(frame_limit);
+    }
     auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                     : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
@@ -625,10 +628,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     while (!token.stop_requested()) {
         timer.Start();
-        if (bb_key_pressed(0x78 /* VK_F9 */)) {
-            // 30 -> 60 -> 90 -> 120 -> 30 (testing how high the game holds up; its cutscene
+        // TOport: the menu's frame limit (BbSettings::fps_limit) applies live, like F9.
+        const bool menu_limit = frame_limit &&
+                                BbSettings::Get().fps_limit.load() != frame_limit;
+        const bool f9 = bb_key_pressed(0x78 /* VK_F9 */);
+        if (f9 || menu_limit) {
+            // F9: 30 -> 60 -> 90 -> 120 -> 30 (testing how high the game holds up; its cutscene
             // timing assumes 30).
-            frame_limit = frame_limit < 60 ? 60 : frame_limit < 90 ? 90 : frame_limit < 120 ? 120 : 30;
+            frame_limit = !f9 ? BbSettings::Get().fps_limit.load()
+                        : frame_limit < 60 ? 60 : frame_limit < 90 ? 90 : frame_limit < 120 ? 120 : 30;
+            BbSettings::Get().fps_limit.store(frame_limit);
+            if (f9) {
+                BbSettings::Save(); // remembered for the next start (run.py: BB_FPS_LIMIT)
+            }
             frame_period = std::chrono::nanoseconds(1000000000 / frame_limit);
             immediate_flips = true;
             next_flip = std::chrono::steady_clock::now();

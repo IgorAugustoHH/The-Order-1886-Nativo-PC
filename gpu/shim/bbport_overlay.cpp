@@ -169,6 +169,66 @@ void Menu() {
     ImGui::Text("%.0f FPS  (%.1f ms)", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
                 frame_ms_avg);
 
+    ImGui::SeparatorText("TOport");
+    static const char* aa_modes[] = {"TAA original do jogo", "DLSS DLAA (resolução nativa)",
+                                     "DLSS Qualidade", "DLSS Equilibrado", "DLSS Desempenho",
+                                     "DLSS Ultra Desempenho"};
+    int order_aa = s.order_aa;
+    if (ImGui::BeginCombo("Anti-aliasing", aa_modes[order_aa])) {
+        for (int i = 0; i < BbSettings::OrderAaCount; ++i) {
+            const bool supported = i == BbSettings::OrderAaGame || s.dlss_supported.load();
+            ImGui::BeginDisabled(!supported);
+            if (ImGui::Selectable(aa_modes[i], i == order_aa)) {
+                Store(s.order_aa, i, true);
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    Hint("DLSS substitui a resolução temporal do próprio jogo (NVIDIA RTX). Os modos abaixo de DLAA renderizam a cena em resolução menor e reconstroem para a saída. Reinicie para aplicar.");
+    static const char* resolutions[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080"};
+    int resolution = s.order_resolution == 720 ? 0 : 1;
+    if (ImGui::BeginCombo("Resolução do jogo", resolutions[resolution])) {
+        for (int i = 0; i < 2; ++i) {
+            if (ImGui::Selectable(resolutions[i], i == resolution)) {
+                Store(s.order_resolution, i ? 1080 : 720, true);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. Reinicie para aplicar.");
+    static const unsigned limits[] = {30, 60, 90, 120};
+    char limit_label[32];
+    std::snprintf(limit_label, sizeof(limit_label), "%u FPS", s.fps_limit.load());
+    if (ImGui::BeginCombo("Limite de quadros (F9)", limit_label)) {
+        for (const unsigned limit : limits) {
+            char label[32];
+            std::snprintf(label, sizeof(label), "%u FPS", limit);
+            if (ImGui::Selectable(label, limit == s.fps_limit.load())) {
+                Store(s.fps_limit, limit, true);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    Hint("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.");
+    const char* language_name = "?";
+    for (const auto& language : BbSettings::GameLanguages) {
+        if (language.code == s.game_language) language_name = language.name;
+    }
+    if (ImGui::BeginCombo("Idioma do jogo", language_name)) {
+        for (const auto& language : BbSettings::GameLanguages) {
+            if (ImGui::Selectable(language.name, language.code == s.game_language)) {
+                Store(s.game_language, language.code, true);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    Hint("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.");
+    Checkbox("Câmera livre nas cutscenes (modo foto)", s.photo_camera);
+    Hint("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.");
+    Checkbox("Carregamento acelerado", s.fast_loading);
+    Hint("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.");
+
     ImGui::SeparatorText("Reconstrução temporal da imagem");
     if (const char* option = std::getenv("BB_ORDER_LIVE_OPTIONS"); option && option[0] == '1') {
         ImGui::TextWrapped("Estado real: %s", s.temporal_status.load());
@@ -357,7 +417,7 @@ void Menu() {
     bool restart = s.object_motion != s.startup_object_motion ||
                    s.model_lod != s.startup_model_lod ||
                    s.live_resolution != s.startup_live_resolution ||
-                   BbSettings::ResolutionNeedsRestart();
+                   BbSettings::ResolutionNeedsRestart() || BbSettings::OrderNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= s.effects[e] != s.startup_effects[e];
     }

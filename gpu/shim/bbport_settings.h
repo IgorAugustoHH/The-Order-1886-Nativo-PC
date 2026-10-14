@@ -17,6 +17,11 @@ inline bool IsFsr4(int upscaler) {
 }
 enum Preset : int { NativeAA = 0, Quality, Balanced, Performance, UltraPerformance, PresetCount };
 enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugViewCount };
+/// TOport: the game's own temporal AA, or DLSS replacing its resolve (DLAA .. Ultra).
+enum OrderAa : int {
+    OrderAaGame, OrderAaDlaa, OrderAaQuality, OrderAaBalanced, OrderAaPerformance, OrderAaUltra,
+    OrderAaCount
+};
 
 /// Game effects switched by the community patches at start (patches.py EFFECTS): ini key,
 /// menu label, default (the game's own behaviour).
@@ -92,6 +97,20 @@ struct Values {
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
 
+    /// TOport (The Order: 1886): applied at start by run.py, which turns them into the
+    /// BB_ORDER_* / BB_LANGUAGE / pipe environment; changes need a restart (except fps_limit).
+    std::atomic<int> order_aa{OrderAaQuality};   ///< OrderAa: game TAA, DLAA, DLSS modes
+    std::atomic<int> order_resolution{1080};     ///< 720 or 1080 (the game's own targets)
+    std::atomic<int> game_language{17};          ///< PS4 system language code (17 pt-BR)
+    std::atomic<bool> photo_camera{true};        ///< free photo camera in cutscenes
+    std::atomic<bool> fast_loading{true};        ///< compute pipe parts ade + command pipe
+    std::atomic<unsigned> fps_limit{60};         ///< 30/60/90/120; F9 cycles it, applied live
+    int startup_order_aa = OrderAaQuality;
+    int startup_order_resolution = 1080;
+    int startup_game_language = 17;
+    bool startup_photo_camera = true;
+    bool startup_fast_loading = true;
+
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;
     int startup_upscaler = UpscalerFsr3;
@@ -116,6 +135,26 @@ int RenderPreset();
 bool ResolutionNeedsRestart();
 /// Writes the file (menu changes).
 void Save();
+/// TOport settings changed since start (they are applied by run.py on restart).
+bool OrderNeedsRestart();
+
+const char* OrderAaName(int mode);
+
+struct GameLanguage {
+    int code;
+    const char* name;
+};
+/// PS4 system language codes the menu and launcher offer.
+inline constexpr GameLanguage GameLanguages[] = {
+    {17, "Português (Brasil)"}, {7, "Português (Portugal)"}, {1, "English (US)"},
+    {18, "English (UK)"},       {3, "Español (España)"},   {20, "Español (Latinoamérica)"},
+    {2, "Français"},            {22, "Français (Canada)"},  {4, "Deutsch"},
+    {5, "Italiano"},            {6, "Nederlands"},          {8, "Русский"},
+    {16, "Polski"},             {19, "Türkçe"},             {12, "Suomi"},
+    {13, "Svenska"},            {14, "Dansk"},              {15, "Norsk"},
+    {21, "العربية (Arabic)"},   {0, "日本語 (Japanese)"},    {9, "한국어 (Korean)"},
+    {10, "中文 繁體 (Traditional Chinese)"}, {11, "中文 简体 (Simplified Chinese)"},
+};
 
 /// Render resolution divisor of a preset (1.0 native, 1.5 quality, ...).
 float PresetScale(int preset);
