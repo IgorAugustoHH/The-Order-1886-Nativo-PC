@@ -32,7 +32,7 @@ LOG_FILE = DATA_DIR / 'last_run.log'
 ASSETS = PORT_DIR / 'launcher'
 TITLE_ID = 'CUSA00785'
 GAME_VERSION = '01.02'
-VERSION = '0.1'
+VERSION = '0.1.0'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 

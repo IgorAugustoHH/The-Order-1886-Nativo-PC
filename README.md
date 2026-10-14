@@ -11,7 +11,15 @@ muda entre PS4 e PC é traduzido: as funções do sistema da Sony (reescritas nu
 **Nenhum arquivo do jogo está neste repositório.** É preciso um dump próprio, descriptografado, do
 CUSA00785 (versão 1.02).
 
-## Estado (pré-lançamento, 14/10/2026)
+![Londres vista do telhado, rodando nativo no PC](docs/screenshots/londres-telhado.jpg)
+
+| | |
+|---|---|
+| ![Corredor](docs/screenshots/corredor.jpg) | ![Telhado em cutscene](docs/screenshots/telhado-cutscene.jpg) |
+
+*Capturas do TOport em um PC com RTX 2060, modo Original do PS4 (2.40:1) com DLSS.*
+
+## Estado (v0.1.0, pré-lançamento, 14/10/2026)
 O jogo **roda do começo ao fim dos trechos testados, sem crash**, com cutscenes, combate e
 exploração de Londres funcionando. Com um save de jogo completo, **todos os capítulos estão sendo
 testados** agora pela seleção de capítulos, e cada nova área confirma a base.
@@ -39,7 +47,8 @@ testados** agora pela seleção de capítulos, e cada nova área confirma a base
 | Configuração | Cenas pesadas |
 |---|---|
 | Original + TAA do jogo | ~45–50 FPS |
-| Original + DLSS Qualidade | ~40–45 FPS (modos mais baixos sobem mais) |
+| Original + DLSS Qualidade | ~40–45 FPS |
+| Original + DLSS Desempenho | até ~80 FPS |
 | 16:9 1080p + DLSS Qualidade (base fiel anterior) | ~44 FPS |
 
 A primeira visita a cada área ainda compila shaders (travadinhas curtas); da segunda vez em diante o
@@ -54,6 +63,9 @@ cache e a pré-carga deixam tudo mais suave.
 ### Requisitos recomendados
 GPU Vulkan 1.3 com 6 GB de VRAM (DLSS: NVIDIA RTX), 16 GB de RAM (feche navegador e apps pesados ao
 jogar; o port fecha sozinho se a RAM livre cair abaixo de 700 MB), CPU de 6 núcleos.
+
+**Dica importante de desempenho:** deixe o arquivo de paginação do Windows num SSD/NVMe. Num HD
+mecânico, quando a RAM aperta, o jogo engasga a cada poucos segundos.
 
 ## Jogar (TOport)
 1. Abra `TOport.exe` (pacote gerado por `packaging/windows/package_toport.sh`).
