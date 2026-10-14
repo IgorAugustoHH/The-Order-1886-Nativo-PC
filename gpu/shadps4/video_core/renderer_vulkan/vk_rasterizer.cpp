@@ -4092,8 +4092,7 @@ void Rasterizer::UpdateDepthStencilState() const {
         const float units = env ? float(std::atof(env)) : 0.0f;
         if (units > 0.0f) {
             std::printf("Redraw depth bias: %.0f units on LessEqual passes without depth "
-                        "writes (test)
-", units);
+                        "writes (test)\n", units);
         }
         return units;
     }();
