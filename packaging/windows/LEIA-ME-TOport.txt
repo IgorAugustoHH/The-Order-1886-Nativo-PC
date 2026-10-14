@@ -24,3 +24,16 @@ Arquivos criados nesta pasta
 - bbport.ini: configurações (as mesmas do menu do jogo).
 - toport.json: pasta do jogo e modo de tela.
 - user\: saves e cache de shaders.  out\: jogo preparado.  last_run.log: registro.
+
+Aviso legal
+- Projeto de fã, sem ligação, aprovação ou patrocínio da Sony Interactive Entertainment,
+  da Ready at Dawn Studios ou da NVIDIA. "PlayStation", "PS4" e "The Order: 1886" são marcas
+  dos seus donos.
+- Nenhum arquivo do jogo é distribuído. É preciso o seu próprio dump de uma cópia que você
+  possui legalmente.
+- Fornecido "como está", sem garantias.
+
+Agradecimentos
+BBPort (deadinside28, Supermedo), shadPS4, Ready at Dawn (SIGGRAPH 2015), NVIDIA (DLSS),
+AjncSystem (ShadowOfTheColossus-PC), HayatoG, droogie (bbhost) e o auxiliador (Codex).
+Licença: GPL-2.0-or-later (LICENSE); DLSS: licenses\NVIDIA-DLSS-LICENSE.txt.

@@ -61,9 +61,36 @@ compila, roda o jogo, fecha e mostra onde parou. `the-order/JOGAR_60FPS.bat` (re
 Teclado: Espaço = ✕, Shift = ◯, E = □, Q = △, WASD = analógico esquerdo, setas = analógico direito,
 Enter = Options.
 
-## Créditos e licença
-GPL-2.0-or-later, herdada do BBPort e do shadPS4.
-- [BBPort](https://github.com/Supermedo/bloodborne_pc): deadinside28 (Linux), Supermedo (Windows).
-  O README original está em [`README.bbport.md`](README.bbport.md).
-- [shadPS4](https://github.com/shadps4-emu/shadPS4): núcleo de vídeo e recompilador de shaders.
-- Demais bibliotecas: ver `README.bbport.md`.
+## Agradecimentos
+O TOport só existe porque outras pessoas abriram o caminho e publicaram o seu trabalho:
+- **[BBPort](https://github.com/Supermedo/bloodborne_pc)**, de deadinside28 (Linux) e Supermedo
+  (Windows): a base inteira do port, do carregador nativo ao launcher e ao menu do jogo. O README
+  original está em [`README.bbport.md`](README.bbport.md).
+- **[shadPS4](https://github.com/shadps4-emu/shadPS4)** e a sua equipe: núcleo de vídeo Vulkan e
+  recompilador de shaders. As anotações sobre The Order no
+  [PR #4798](https://github.com/shadps4-emu/shadPS4/pull/4798) ajudaram na investigação das sombras.
+- **Ready at Dawn**, pela palestra do SIGGRAPH 2015 sobre o renderizador do jogo, que guiou a
+  integração do DLSS no lugar da resolução temporal original.
+- **NVIDIA**, pelo DLSS (SDK distribuído sob a licença em `licenses/`).
+- Projetos consultados durante o desenvolvimento, com ideias testadas aqui:
+  [ShadowOfTheColossus-PC](https://github.com/AjncSystem/ShadowOfTheColossus-PC) (AjncSystem), os
+  ports do HayatoG (inFAMOUS: Second Son e outros) e o [bbhost](https://github.com/droogie/bbhost)
+  (droogie).
+- O auxiliador (Codex), pelas correções de rosto, partículas, mira e pelo menu em português.
+
+## Aviso legal
+- Projeto de fã, sem fins lucrativos, **sem qualquer ligação, aprovação ou patrocínio** da Sony
+  Interactive Entertainment, da Ready at Dawn Studios ou da NVIDIA.
+- "PlayStation", "PS4" e os respectivos logotipos são marcas registradas da Sony Interactive
+  Entertainment Inc. "The Order: 1886" é marca da Sony Interactive Entertainment LLC. Todas as
+  outras marcas pertencem aos seus donos.
+- **Nenhum arquivo do jogo é distribuído**: nem executável, nem dados, nem shaders, nem imagens.
+  Para jogar é preciso o seu próprio dump de uma cópia que você possui legalmente (CUSA00785,
+  versão 01.02). O cache de shaders é gerado na máquina de cada jogador.
+- Este repositório não contém nem ensina a contornar proteções de cópia. Não peça nem compartilhe
+  arquivos do jogo nas issues.
+- O software é fornecido "como está", sem garantias. Use por sua conta e risco.
+
+## Licença
+GPL-2.0-or-later, herdada do BBPort e do shadPS4. Bibliotecas de terceiros: ver
+`README.bbport.md`. O DLSS segue a licença da NVIDIA em `licenses/NVIDIA-DLSS-LICENSE.txt`.
