@@ -486,6 +486,14 @@ void PipelineCache::WarmUp() {
         std::fflush(stderr);
         return;
     }
+    // TOport: no list of recent sessions yet (first session with this cache): nothing would
+    // be built, and reading every stored pipeline only delayed the start (24 s for 7186).
+    if (recent_filter && recent_preload.empty()) {
+        Storage::DataBase::Instance().FinishPreload();
+        std::printf("Pipeline cache: 0 pipelines built at start (no recent sessions yet); all on "
+                    "first use\n");
+        return;
+    }
     u32 num_pipelines{};
     u32 num_total_pipelines{};
     const char* budget_env = std::getenv("BB_PRELOAD_BUDGET_MS");

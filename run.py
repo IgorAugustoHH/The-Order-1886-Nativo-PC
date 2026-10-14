@@ -93,7 +93,7 @@ TOPORT_DEFAULTS = {
 }
 
 # A new bbport.ini starts from the settings of the approved runs (teste-mira/pt-dlss.ini).
-TOPORT_INI = '''# bbport settings (in-game menu: Insert / L3+R3)
+TOPORT_INI = '''# bbport settings (in-game menu: Insert / Select)
 upscaler=dlss
 preset=3
 sharpen=1
@@ -114,7 +114,7 @@ fps_limit=60
 
 
 def toport_environment(env, config):
-    """The Order settings of bbport.ini (launcher and Insert/L3+R3 menu) as the environment
+    """The Order settings of bbport.ini (launcher and Insert/Select menu) as the environment
     the renderer, patches.py and the runtime read."""
     if env.get('BB_TOPORT', '1') != '1':
         return

@@ -50,7 +50,6 @@ namespace {
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
 bool initialized = false;
 std::atomic<bool> menu_open{false};
-bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
 // The game's text dialog (SetTextEntry), guarded by imgui_mutex.
 bool text_entry_active = false;
@@ -196,7 +195,7 @@ void Menu() {
                             ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(620.0f * base_scale, 0.0f), ImGuiCond_Appearing);
     bool keep_open = true;
-    if (!ImGui::Begin("The Order: 1886 — TOport (Insert / L3+R3)", &keep_open,
+    if (!ImGui::Begin("The Order: 1886 — TOport (Insert / Select)", &keep_open,
                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
@@ -387,7 +386,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
         return;
     }
     initialized = true;
-    std::printf("Overlay: menu ready (Insert or L3+R3)\n");
+    std::printf("Overlay: menu ready (Insert or Select)\n");
 }
 
 void UpdateTextInput(SDL_Window* window) {
@@ -436,13 +435,12 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
         const u8 button = event.gbutton.button;
-        if (button == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
-            l3_down = down;
-        } else if (button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
-            r3_down = down;
-        }
-        if (down && l3_down && r3_down) {
-            SetOpen(!is_open);
+        // TOport: Select / Share (SDL "back") toggles the menu; The Order uses L3+R3 together
+        // in play, so that combination stays the game's.
+        if (button == SDL_GAMEPAD_BUTTON_BACK) {
+            if (down) {
+                SetOpen(!is_open);
+            }
             return true;
         }
         if (!is_open) {

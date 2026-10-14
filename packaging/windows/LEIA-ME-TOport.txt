@@ -16,7 +16,7 @@ Na primeira execução o jogo é preparado e os shaders são compilados enquanto
 Os shaders não são distribuídos: cada jogador gera os seus a partir da própria cópia.
 
 No jogo
-- Insert ou L3+R3: menu do TOport (anti-aliasing/DLSS, resolução, limite de quadros,
+- Insert ou Select: menu do TOport (anti-aliasing/DLSS, resolução, limite de quadros,
   idioma, câmera livre nas cutscenes, carregamento acelerado).
 - F9: alterna o limite de quadros 30/60/90/120.
 

@@ -3,7 +3,7 @@
 """TOport: launcher for The Order: 1886 on Windows (Tkinter), in the style of the BBPort one.
 
 The player picks the folder of their own dump (CUSA00785, version 01.02) and the settings the
-in-game menu (Insert / L3+R3) also edits; they live in bbport.ini next to this program, and
+in-game menu (Insert / Select) also edits; they live in bbport.ini next to this program, and
 run.py turns them into the port's environment. Launcher-only options (game folder, display
 mode) are in toport.json in the same folder. The banner shows the dump's own art
 (sce_sys/pic0.png): nothing of the game is shipped with the port.
@@ -127,7 +127,7 @@ def write_ini(changes):
     try:
         lines = CONFIG.read_text(encoding='utf-8', errors='replace').splitlines()
     except OSError:
-        lines = ['# bbport settings (in-game menu: Insert / L3+R3)']
+        lines = ['# bbport settings (in-game menu: Insert / Select)']
     pending = dict(changes)
     for i, line in enumerate(lines):
         key = line.partition('=')[0].strip()
@@ -455,7 +455,7 @@ class Launcher:
             item.bind('<Leave>', lambda _e, n=name: n != self.current_page and self.nav[n].configure(bg=BG))
             self.nav[name] = item
         tk.Frame(side, bg=BG).pack(fill='both', expand=True)
-        tk.Label(side, text='No jogo: Insert ou L3+R3\nabre o menu do TOport.\nF9 alterna o limite de quadros.',
+        tk.Label(side, text='No jogo: Insert ou Select\nabre o menu do TOport.\nF9 alterna o limite de quadros.',
                  bg=BG, fg=MUTED, font=('Segoe UI', 9), justify='left',
                  wraplength=self.px(200)).pack(anchor='w', padx=22, pady=(0, 18))
 
@@ -564,7 +564,7 @@ class Launcher:
 
     def build_graphics(self):
         f = self.page('graphics', 'Imagem',
-                      'Salvo em bbport.ini; o menu do jogo (Insert ou L3+R3) altera os mesmos valores.')
+                      'Salvo em bbport.ini; o menu do jogo (Insert ou Select) altera os mesmos valores.')
         self.section(f, 'Anti-aliasing', top=4)
         self.row(f, 'Modo', self.choice(f, 'order_aa', 'ini', AA_MODES),
                  'DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. DLAA mantém a cena '
