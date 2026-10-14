@@ -420,6 +420,18 @@ bool ComputePipeOn() {
     return on;
 }
 
+/// BB_COMPUTE_PIPE_PARTS (default "abcde"): which parts of the compute pipe are on, to find
+/// the one that drops scene content. a = compute packets skip the drain, b = in-order compute
+/// ReleaseMem labels, c = pipelined WriteData, d = DMA fill pending values, e = graphics waits
+/// yield to other queues before draining.
+bool ComputePart(char part) {
+    static const std::string parts = [] {
+        const char* env = std::getenv("BB_COMPUTE_PIPE_PARTS");
+        return std::string(env ? env : "abcde");
+    }();
+    return ComputePipeOn() && parts.find(part) != std::string::npos;
+}
+
 bool ComputePacketPipelined(std::span<const u32> acb) {
     const auto* header = reinterpret_cast<const PM4Header*>(acb.data());
     if (header->type != 3 || header->type3.NumWords() + 1 > acb.size()) {
@@ -1286,7 +1298,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                                     dma_data->NumBytes());
                     // bbport (BB_COMPUTE_PIPE): an immediate-data fill of a small label is a
                     // known value: waits on it need not drain the pipe.
-                    if (ComputePipeOn() && dma_data->src_sel == DmaDataSrc::Data &&
+                    if (ComputePart('d') && dma_data->src_sel == DmaDataSrc::Data &&
                         (dma_data->NumBytes() == 4 || dma_data->NumBytes() == 8)) {
                         const u64 value = u64(dma_data->data) | (u64(dma_data->data) << 32);
                         pending_fences.push_back({dma_data->DstAddress<VAddr>(), value,
@@ -1383,7 +1395,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 // BB_COMPUTE_PIPE: the label may come from a compute queue that has not run yet;
                 // let the other queues run first (their labels become pending values) instead
                 // of draining the draw pipe for a value it will not write.
-                bool yielded = !ComputePipeOn();
+                bool yielded = !ComputePart('e');
                 while (!wait_reg_mem->Test(regs.reg_array)) {
                     if (u32 value; ComputePipeOn() &&
                                    wait_reg_mem->mem_space.Value() ==
@@ -1551,7 +1563,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     size_t acb_size = acb.size_bytes();
     while (!acb.empty()) {
         ProcessCommands();
-        if (rasterizer && !(ComputePipeOn() && queue.tmp_dwords == 0 &&
+        if (rasterizer && !(ComputePart('a') && queue.tmp_dwords == 0 &&
                             ComputePacketPipelined(acb))) {
             rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute); // bbport: compute work uses the caches
         }
@@ -1756,7 +1768,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
             ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
             const u32 data_size = (header->type3.count.Value() - 2) * 4;
-            if (ComputePipeOn() && rasterizer && !write_data->wr_one_addr.Value()) {
+            if (ComputePart('c') && rasterizer && !write_data->wr_one_addr.Value()) {
                 const u32 count = header->type3.count.Value();
                 if (rasterizer->RunInOrder(&RunWriteData, header, (count + 1) * sizeof(u32),
                                            BbToggle::PipelinedMemoryWrites)) {
@@ -1806,7 +1818,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 rasterizer->WaitDeferredSignals();
             }
             const auto* release_mem = reinterpret_cast<const PM4CmdReleaseMem*>(header);
-            if (ComputePipeOn() && rasterizer &&
+            if (ComputePart('b') && rasterizer &&
                 (release_mem->data_sel.Value() == DataSelect::Data32Low ||
                  release_mem->data_sel.Value() == DataSelect::Data64)) {
                 const ComputeRelease job{*release_mem, queue.pipe_id};
