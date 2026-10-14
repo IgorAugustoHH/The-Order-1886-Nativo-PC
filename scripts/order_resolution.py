@@ -73,7 +73,14 @@ def resolution_writes(elf, mode):
         if elf[start:start + len(original)] != original:
             raise ValueError(f'Resolucao: bytes originais divergem em {target:#x}')
         out.append((target, replacement))
-    print('The Order: resolucao forcada para 3840x2160 (ramo -use4K do jogo, EXPERIMENTAL, 3 escritas)'
+    if mode == '2160':
+        # The 4K branch with the retail 2.40:1 camera (16:9 at high resolutions breaks, as at 1080p).
+        target, original, aspect = RETAIL_ASPECT
+        start = elf_offset(elf, target, len(original))
+        if elf[start:start + len(original)] != original:
+            raise ValueError(f'Resolucao: proporcao original diverge em {target:#x}')
+        out.append((target + 6, struct.pack('<f', aspect)))
+    print('The Order: resolucao forcada para 3840x2160 (ramo -use4K do jogo, camera 2.40:1, EXPERIMENTAL)'
           if mode == '2160' else 'The Order: resolucao forcada para 1920x1080 (2 escritas)')
     rect = os.environ.get('BB_ORDER_SCENE_RECT')
     if rect:
