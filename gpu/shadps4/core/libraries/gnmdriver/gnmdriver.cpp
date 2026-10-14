@@ -84,10 +84,17 @@ static void ResetSubmissionLock(Platform::InterruptId irq) {
     cv_lock.notify_all();
 }
 
+extern "C" uint64_t runtime_wait_begin(void);
+extern "C" void runtime_wait_end(const char* what, uint64_t start, const char* detail, long long arg);
+extern "C" void runtime_timeline(const char* event, const char* detail, long long arg);
+
 static void WaitGpuIdle() {
     HLE_TRACE;
+    const uint64_t wait_start = runtime_wait_begin();
     std::unique_lock lock{m_wait_idle};
     cv_lock.wait(lock, [] { return submission_lock == 0; });
+    runtime_wait_end("gnm wait gpu idle", wait_start, "", 0);
+    runtime_timeline("gpu-idle-wait-end", "", 0);
 }
 
 // Write a special ending NOP packet with N DWs data block
@@ -2339,6 +2346,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitCommandBuffersForWorkload(u32 workload, u32 count,
     }
 
     std::scoped_lock lk{m_submit_lock};
+    runtime_timeline("submit", "", count);
     WaitGpuIdle();
 
     return PerformSubmit(count, const_cast<const u32**>(dcb_gpu_addrs), dcb_sizes_in_bytes,
@@ -2356,6 +2364,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
     HLE_TRACE;
     LOG_DEBUG(Lib_GnmDriver, "called");
     std::scoped_lock lk{m_submit_lock};
+    runtime_timeline("submit-done", "", 0);
     WaitGpuIdle();
     if (!liverpool->IsGpuIdle()) {
         submission_lock = true;

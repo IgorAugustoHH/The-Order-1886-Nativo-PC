@@ -18,6 +18,8 @@ void runtime_restart(void);
 /* BB_SLOW_WAITS=<ms>: log guest blocking calls (locks, waits, reads) longer than that. */
 uint64_t runtime_wait_begin(void);
 void runtime_wait_end(const char *what,uint64_t start,const char *detail,long long arg);
+/* BB_TIMELINE=1: timestamped GPU submission/idle/EOP/flip/wait events (stall analysis). */
+void runtime_timeline(const char *event,const char *detail,long long arg);
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);

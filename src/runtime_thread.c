@@ -64,6 +64,15 @@ uint64_t runtime_wait_begin(void) {
     clock_gettime(CLOCK_MONOTONIC,&t);
     return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;
 }
+void runtime_timeline(const char *event,const char *detail,long long arg) {
+    static int on=-1;
+    if (on<0) { const char *e=getenv("BB_TIMELINE"); on=e && e[0]=='1'; }
+    if (!on) return;
+    static unsigned logged;
+    if (__atomic_fetch_add(&logged,1,__ATOMIC_RELAXED)>=400000) return;
+    fprintf(stderr,"TL %.3f %s '%s' %s %lld\n",runtime_wait_begin()/1e6,event,
+            current ? current->name : "host",detail ? detail : "",arg);
+}
 void runtime_wait_end(const char *what,uint64_t start,const char *detail,long long arg) {
     static int threshold_ms=-1;
     if (threshold_ms<0) { const char *e=getenv("BB_SLOW_WAITS"); threshold_ms=e ? atoi(e) : 0; }

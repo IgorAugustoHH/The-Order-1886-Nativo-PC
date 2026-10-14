@@ -460,6 +460,7 @@ int PS4_SYSV_ABI sceKernelDeleteEqueue(OrbisKernelEqueue eq) {
 
 extern "C" uint64_t runtime_wait_begin(void);
 extern "C" void runtime_wait_end(const char* what, uint64_t start, const char* detail, long long arg);
+extern "C" void runtime_timeline(const char* event, const char* detail, long long arg);
 
 int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev, int num, int* out,
                                      OrbisKernelUseconds* timo) {
@@ -483,7 +484,9 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
     }
 
     const u64 wait_start = runtime_wait_begin();
+    runtime_timeline("equeue-wait-begin", std::string(equeue->GetName()).c_str(), 0);
     *out = equeue->WaitForEvents(ev, num, timo);
+    runtime_timeline("equeue-wait-end", std::string(equeue->GetName()).c_str(), *out);
     runtime_wait_end("equeue wait", wait_start, std::string(equeue->GetName()).c_str(), *out);
 
     if (*out == 0) {

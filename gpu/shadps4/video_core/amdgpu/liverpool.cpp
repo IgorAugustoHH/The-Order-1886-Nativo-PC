@@ -34,6 +34,8 @@
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+extern "C" void runtime_timeline(const char* event, const char* detail, long long arg);
+
 namespace AmdGpu {
 
 static const char* dcb_task_name{"DCB_TASK"};
@@ -243,6 +245,7 @@ void Liverpool::Process(std::stop_token stoken) {
                 work_retired = true;
             }
         }
+        runtime_timeline("gpu-idle-signal", "", 0);
         Platform::IrqC::Instance()->Signal(Platform::InterruptId::GpuIdle);
     }
 }
@@ -303,7 +306,10 @@ void SignalEop(const PM4CmdEventWriteEop& eop) {
                 memcpy(address, &data, num_bytes);
             }
         },
-        [] { Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop); });
+        [] {
+            runtime_timeline("eop-irq", "", 0);
+            Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop);
+        });
 }
 
 // bbport: end-of-pipe/-shader events run in order with the draws (Rasterizer::RunInOrder: on
