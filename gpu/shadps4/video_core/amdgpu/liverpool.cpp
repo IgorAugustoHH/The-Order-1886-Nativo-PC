@@ -11,6 +11,11 @@
 #include "bbport_copy.h"
 #include "bbport_toggles.h"
 #include <cstdio>
+#include <algorithm>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <fmt/format.h>
 #include <boost/preprocessor/stringize.hpp>
 
 #include "common/assert.h"
@@ -353,6 +358,69 @@ void RunWriteData(Vulkan::Rasterizer& rasterizer, const u8* data) {
                 (header->type3.count.Value() - 2) * sizeof(u32));
 }
 
+// bbport (BB_COMPUTE_PIPE=1): a compute queue's ReleaseMem in order with the draws and
+// dispatches handed to the recording thread, like graphics end-of-pipe events.
+struct ComputeRelease {
+    PM4CmdReleaseMem release;
+    u32 pipe_id;
+};
+
+void RunComputeReleaseMem(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    const auto job = *reinterpret_cast<const ComputeRelease*>(data);
+    rasterizer.ProcessDownloadImages();
+    const auto signal = [job] {
+        job.release.SignalFence(
+            [pipe_id = job.pipe_id] {
+                Platform::IrqC::Instance()->Signal(static_cast<Platform::InterruptId>(pipe_id));
+            },
+            [](VAddr, u16, u16) { UNREACHABLE_MSG("GDS release handed to the draw pipe"); });
+    };
+    if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
+        rasterizer.SignalAfterHostCopies(signal);
+    } else {
+        rasterizer.WaitHostCopies();
+        rasterizer.WaitDeferredSignals();
+        signal();
+    }
+}
+
+/// BB_COMPUTE_PIPE=1: compute packets that only reach memory through the draw pipe (registers,
+/// dispatches, cache flushes, waits, in-order label writes) do not drain it first.
+bool ComputePipeOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_COMPUTE_PIPE");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+bool ComputePacketPipelined(std::span<const u32> acb) {
+    const auto* header = reinterpret_cast<const PM4Header*>(acb.data());
+    if (header->type != 3 || header->type3.NumWords() + 1 > acb.size()) {
+        return false;
+    }
+    switch (header->type3.opcode) {
+    case PM4ItOpcode::Nop:
+    case PM4ItOpcode::SetShReg:
+    case PM4ItOpcode::SetQueueReg:
+    case PM4ItOpcode::DispatchDirect:
+    case PM4ItOpcode::DispatchIndirect:
+    case PM4ItOpcode::AcquireMem:
+    case PM4ItOpcode::EventWrite:
+    case PM4ItOpcode::WaitRegMem:
+    case PM4ItOpcode::WriteData:
+    case PM4ItOpcode::IndirectBuffer:
+        return true;
+    case PM4ItOpcode::ReleaseMem:
+        return reinterpret_cast<const PM4CmdReleaseMem*>(header)->data_sel.Value() ==
+                   DataSelect::Data32Low ||
+               reinterpret_cast<const PM4CmdReleaseMem*>(header)->data_sel.Value() ==
+                   DataSelect::Data64;
+    default:
+        return false;
+    }
+}
+
 void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
     const auto& event_eos = *reinterpret_cast<const PM4CmdEventWriteEos*>(data);
     // Copies deferred to the recording thread precede writes the guest sees.
@@ -402,6 +470,14 @@ void Liverpool::NotePendingWrite(const PM4CmdWriteData& write_data, u32 num_byte
     std::memcpy(&data, write_data.data, num_bytes);
     pending_fences.push_back(
         {write_data.Address<VAddr>(), data, num_bytes, rasterizer->DrawPipeHead()});
+}
+
+void Liverpool::NotePendingValue(VAddr address, u64 data, u32 num_bytes) {
+    while (!pending_fences.empty() && rasterizer->DrawPipeReached(pending_fences.front().position)) {
+        pending_fences.pop_front();
+    }
+    pending_fences.push_back({address, data, num_bytes, rasterizer->DrawPipeHead()});
+    rasterizer->NotePendingGpuWrite(address, num_bytes);
 }
 
 bool Liverpool::PendingFenceValue(VAddr address, u32& value) {
@@ -1268,12 +1344,40 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 // Else the value may come from a fence that thread has yet to write: let it
                 // catch up before yielding to other queues.
+                bool drained = false;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
+                        drained = true;
                         continue;
                     }
                     YIELD_GFX();
+                }
+                // bbport diagnostics: which waits drain the draw pipe (address, reference, and
+                // whether the value is a fence of the pipe's pending list at all).
+                if (drained) {
+                    static std::unordered_map<VAddr, u64> drain_waits;
+                    static u64 total_drains = 0;
+                    const VAddr addr = wait_reg_mem->mem_space.Value() ==
+                                               PM4CmdWaitRegMem::MemSpace::Memory
+                                           ? wait_reg_mem->Address<VAddr>()
+                                           : 0;
+                    ++drain_waits[addr];
+                    if (++total_drains % 20000 == 0) {
+                        std::vector<std::pair<u64, VAddr>> top;
+                        for (const auto& [a, n] : drain_waits) top.emplace_back(n, a);
+                        std::sort(top.rbegin(), top.rend());
+                        std::string line;
+                        for (size_t i = 0; i < top.size() && i < 8; ++i) {
+                            line += fmt::format(" {:#x}:{}", top[i].second, top[i].first);
+                        }
+                        std::printf("WaitRegMem drains: %llu total, %zu addresses; top%s (ref %#x "
+                                    "mask %#x func %u space %u)\n",
+                                    (unsigned long long)total_drains, drain_waits.size(),
+                                    line.c_str(), wait_reg_mem->ref, wait_reg_mem->mask,
+                                    u32(wait_reg_mem->function.Value()),
+                                    u32(wait_reg_mem->mem_space.Value()));
+                    }
                 }
                 break;
             }
@@ -1387,7 +1491,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     size_t acb_size = acb.size_bytes();
     while (!acb.empty()) {
         ProcessCommands();
-        if (rasterizer) {
+        if (rasterizer && !(ComputePipeOn() && queue.tmp_dwords == 0 &&
+                            ComputePacketPipelined(acb))) {
             rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute); // bbport: compute work uses the caches
         }
 
@@ -1591,6 +1696,15 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             const auto* write_data = reinterpret_cast<const PM4CmdWriteData*>(header);
             ASSERT(write_data->dst_sel.Value() == 2 || write_data->dst_sel.Value() == 5);
             const u32 data_size = (header->type3.count.Value() - 2) * 4;
+            if (ComputePipeOn() && rasterizer && !write_data->wr_one_addr.Value()) {
+                const u32 count = header->type3.count.Value();
+                if (rasterizer->RunInOrder(&RunWriteData, header, (count + 1) * sizeof(u32),
+                                           BbToggle::PipelinedMemoryWrites)) {
+                    NotePendingWrite(*write_data, data_size);
+                    rasterizer->NotePendingGpuWrite(write_data->Address<VAddr>(), data_size);
+                }
+                break;
+            }
             if (!write_data->wr_one_addr.Value()) {
                 std::memcpy(write_data->Address<void*>(), write_data->data, data_size);
             } else {
@@ -1613,6 +1727,12 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
+            if (u32 value; ComputePipeOn() &&
+                           wait_reg_mem->mem_space.Value() == PM4CmdWaitRegMem::MemSpace::Memory &&
+                           PendingFenceValue(wait_reg_mem->Address<VAddr>(), value) &&
+                           wait_reg_mem->TestValue(value)) {
+                break;
+            }
             while (!wait_reg_mem->Test(regs.reg_array)) {
                 YIELD_ASC(vqid);
             }
@@ -1626,6 +1746,18 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 rasterizer->WaitDeferredSignals();
             }
             const auto* release_mem = reinterpret_cast<const PM4CmdReleaseMem*>(header);
+            if (ComputePipeOn() && rasterizer &&
+                (release_mem->data_sel.Value() == DataSelect::Data32Low ||
+                 release_mem->data_sel.Value() == DataSelect::Data64)) {
+                const ComputeRelease job{*release_mem, queue.pipe_id};
+                if (rasterizer->RunInOrder(&RunComputeReleaseMem, &job, sizeof(job))) {
+                    const bool qword = release_mem->data_sel.Value() == DataSelect::Data64;
+                    NotePendingValue(release_mem->Address<VAddr>(),
+                                     qword ? release_mem->DataQWord() : release_mem->DataDWord(),
+                                     qword ? 8u : 4u);
+                }
+                break;
+            }
             if (rasterizer) {
                 rasterizer->ProcessDownloadImages();
             }
