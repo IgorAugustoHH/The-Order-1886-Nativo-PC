@@ -104,12 +104,14 @@ struct Values {
     std::atomic<int> game_language{17};          ///< PS4 system language code (17 pt-BR)
     std::atomic<bool> photo_camera{true};        ///< free photo camera in cutscenes
     std::atomic<bool> fast_loading{true};        ///< compute pipe parts ade + command pipe
+    std::atomic<bool> preload_shaders{true};     ///< build last sessions' pipelines at start
     std::atomic<unsigned> fps_limit{60};         ///< 30/60/90/120; F9 cycles it, applied live
     int startup_order_aa = OrderAaQuality;
     int startup_order_resolution = 1080;
     int startup_game_language = 17;
     bool startup_photo_camera = true;
     bool startup_fast_loading = true;
+    bool startup_preload_shaders = true;
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

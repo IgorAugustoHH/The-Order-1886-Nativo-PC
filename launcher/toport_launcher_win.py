@@ -100,8 +100,9 @@ LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1'
              ('10', '中文 繁體 (Traditional Chinese)'), ('11', '中文 简体 (Simplified Chinese)')]
 DISPLAY_MODES = [('1', 'Tela cheia sem bordas'), ('2', 'Tela cheia exclusiva'), ('0', 'Janela')]
 INI_DEFAULTS = {'order_aa': 'quality', 'order_resolution': '1080', 'fps_limit': '60',
-                'game_language': '17', 'photo_camera': '1', 'fast_loading': '1', 'show_fps': '1'}
-INI_FLAGS = ('photo_camera', 'fast_loading', 'show_fps')
+                'game_language': '17', 'photo_camera': '1', 'fast_loading': '1', 'show_fps': '1',
+                'preload_shaders': '1'}
+INI_FLAGS = ('photo_camera', 'fast_loading', 'show_fps', 'preload_shaders')
 APP_DEFAULTS = {'game_dir': str(PORT_DIR.parent / TITLE_ID), 'display': '1',
                 'close_on_play': False}
 
@@ -584,6 +585,10 @@ class Launcher:
         self.check(f, 'fast_loading', 'ini', 'Carregamento acelerado',
                    'Filas de compute e de leitura sem esperas desnecessárias: texturas e iluminação '
                    'chegam mais rápido, sem perder elementos da cena.')
+        self.check(f, 'preload_shaders', 'ini', 'Pré-carregar shaders ao abrir',
+                   'Antes de o jogo abrir, monta os shaders usados nas duas últimas sessões: menos '
+                   'travadas ao entrar nas áreas, abertura um pouco mais lenta. Na primeira execução '
+                   'ainda não há cache para carregar.')
         self.section(f, 'Launcher')
         self.check(f, 'close_on_play', 'app', 'Fechar o launcher quando o jogo abrir')
 
@@ -718,7 +723,9 @@ class Launcher:
         threading.Thread(target=self.read_output, args=(self.process,), daemon=True).start()
         self.play_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
-        self.status.configure(text='Preparando o jogo; ele abre na própria janela…', fg=GOLD)
+        self.status.configure(text='Preparando o jogo e pré-carregando shaders; ele abre na própria '
+                                   'janela…' if self.var('preload_shaders', 'ini').get() else
+                              'Preparando o jogo; ele abre na própria janela…', fg=GOLD)
         if self.app.get('close_on_play'):
             self.root.after(5000, self.root.destroy)
 
@@ -746,7 +753,9 @@ class Launcher:
                 else:
                     if getattr(self, 'log_file', None):
                         self.log_file.write(item)
-                    if 'Entering original x86-64 code' in item:
+                    if 'Pipeline cache:' in item and 'built at start' in item:
+                        self.status.configure(text='Shaders pré-carregados; abrindo o jogo…', fg=GOLD)
+                    elif 'Entering original x86-64 code' in item:
                         self.status.configure(text='O jogo está rodando.', fg=GOLD)
                     elif 'restarting through run.py' in item:
                         self.status.configure(text='Reiniciando com as novas configurações…', fg=GOLD)

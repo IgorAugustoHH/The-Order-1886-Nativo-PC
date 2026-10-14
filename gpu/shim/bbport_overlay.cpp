@@ -229,6 +229,8 @@ void Menu() {
     Hint("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.");
     OrderCheckbox("fast", "Carregamento acelerado", s.fast_loading);
     Hint("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.");
+    OrderCheckbox("preload", "Pré-carregar shaders ao abrir", s.preload_shaders);
+    Hint("Monta, antes de o jogo abrir, os shaders usados nas duas últimas sessões: menos travadas ao entrar nas áreas, abertura um pouco mais lenta. Reinicie para aplicar.");
 
     ImGui::SeparatorText("Jogo");
     static int language_values[std::size(BbSettings::GameLanguages)];

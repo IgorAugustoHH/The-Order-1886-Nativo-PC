@@ -81,7 +81,7 @@ TOPORT_DEFAULTS = {
     'BB_ASYNC_PIPELINES': '1', 'BB_ASYNC_SHADERS': '1', 'BB_ASYNC_COMPUTE': '0',
     'BB_GRAPHICS_SYNC': '0', 'BB_PIPELINE_CACHE': '1', 'BB_DRIVER_PIPELINE_CACHE': '0',
     'BB_COMPILE_THREADS': '2', 'BB_COMPILE_FAIR_QUEUE': '0', 'BB_COMPILE_AGGRESSIVE': '0',
-    'BB_PRELOAD_PIPELINES': '0', 'BB_PRELOAD_BUDGET_MS': '0',
+    'BB_PRELOAD_BUDGET_MS': '0',
     # Recording and presentation.
     'BB_FRAMES_AHEAD': '2', 'BB_VK_RECORD_THREAD': '1', 'BB_VK_RECORD_THREADS': '1',
     'BB_VK_SEGMENT_KB': '64', 'BB_ASYNC_SUBMIT': '0', 'BB_EMPTY_IMAGE_QUEUE_FAST': '0',
@@ -108,6 +108,7 @@ order_resolution=1080
 game_language=17
 photo_camera=1
 fast_loading=1
+preload_shaders=1
 fps_limit=60
 '''
 
@@ -155,6 +156,8 @@ def toport_environment(env, config):
         env.setdefault('BB_COMPUTE_PIPE_PARTS', 'ade')
         env.setdefault('BB_COMMAND_PIPE', '1')
     env.setdefault('BB_FPS_LIMIT', setting('fps_limit', '60'))
+    # Pipelines of the last two sessions built before the game starts (fewer first-use stalls).
+    env.setdefault('BB_PRELOAD_PIPELINES', setting('preload_shaders', '1'))
     env['BB_TOPORT_KEYS'] = ','.join(sorted(set(env) - before))
 
 
