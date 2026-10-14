@@ -18,8 +18,11 @@ inline Size GameSize() {
     static const Size size = [] {
         const char* env = std::getenv("BB_ORDER_RESOLUTION");
         const int lines = env ? std::atoi(env) : 0;
+        // retail: the game's 2.40:1 camera draws the scene into 1920x800 targets (the bars are
+        // outside them), so the reduced scene and DLSS work at that size.
         return lines == 2160 ? Size{3840, 2160}
-             : lines == 1080 || (env && env[0] == 'r') ? Size{1920, 1080} : Size{1280, 720};
+             : env && env[0] == 'r' ? Size{1920, 800}
+             : lines == 1080 ? Size{1920, 1080} : Size{1280, 720};
     }();
     return size;
 }
