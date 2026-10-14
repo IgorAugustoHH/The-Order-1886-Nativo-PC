@@ -253,15 +253,6 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         subres_range &&
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
     const bool partially_transited = !subresource_states.empty();
-    constexpr auto memo_write_flags = vk::AccessFlagBits2::eTransferWrite |
-                                      vk::AccessFlagBits2::eShaderWrite |
-                                      vk::AccessFlagBits2::eMemoryWrite;
-    if (needs_partial_transition && partially_transited && backing->partial_memo_valid &&
-        backing->partial_memo_range == *subres_range && backing->partial_memo_layout == dst_layout &&
-        backing->partial_memo_access == dst_mask && backing->partial_memo_stage == dst_stage) {
-        return; // the same read-only transition as last time: every state already matches
-    }
-    backing->partial_memo_valid = false;
 
     if (needs_partial_transition || partially_transited) {
         if (!partially_transited) {
@@ -323,12 +314,6 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
 
         if (!needs_partial_transition) {
             subresource_states.clear();
-        } else if (!(dst_mask & memo_write_flags)) {
-            backing->partial_memo_valid = true;
-            backing->partial_memo_range = *subres_range;
-            backing->partial_memo_layout = dst_layout;
-            backing->partial_memo_access = dst_mask;
-            backing->partial_memo_stage = dst_stage;
         }
     } else { // Full resource transition
         constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |
