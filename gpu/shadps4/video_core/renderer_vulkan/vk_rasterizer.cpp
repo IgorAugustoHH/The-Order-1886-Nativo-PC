@@ -4082,11 +4082,17 @@ void Rasterizer::UpdateDepthStencilState() const {
     const auto depth_bias_enabled = regs.polygon_control.NeedsBias();
     dynamic_state.SetDepthBiasEnabled(depth_bias_enabled);
     if (depth_bias_enabled) {
+        // BB_DEPTH_BIAS_RAW=1: pass the guest slope scale as-is instead of dividing by 16
+        // (A/B test from the inFAMOUS/GoW3 ports' TLG_LIGHTING_TEST "bias").
+        static const bool raw_slope = [] {
+            const char* env = std::getenv("BB_DEPTH_BIAS_RAW");
+            return env && env[0] == '1';
+        }();
         const bool front = regs.polygon_control.enable_polygon_offset_front;
+        const float slope = front ? regs.poly_offset.front_scale : regs.poly_offset.back_scale;
         dynamic_state.SetDepthBias(
             front ? regs.poly_offset.front_offset : regs.poly_offset.back_offset,
-            regs.poly_offset.depth_bias,
-            (front ? regs.poly_offset.front_scale : regs.poly_offset.back_scale) / 16.f);
+            regs.poly_offset.depth_bias, raw_slope ? slope : slope / 16.f);
     }
 
     const auto stencil_test_enabled =
