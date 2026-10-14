@@ -221,8 +221,6 @@ void Menu() {
     OrderCombo("res", "Resolução do jogo", s.order_resolution, resolution_values,
                resolution_names);
     Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. Reinicie para aplicar.");
-    OrderCheckbox("letterbox", "Faixas pretas 2.40:1 do PS4", s.letterbox);
-    Hint("Mostra só as 800 linhas centrais, como no console (140 px pretos em cima e embaixo, cobrindo também o HUD nessas faixas). Aplicado na hora.");
 
     ImGui::SeparatorText("Desempenho");
     static const unsigned fps_values[] = {30, 60, 90, 120};

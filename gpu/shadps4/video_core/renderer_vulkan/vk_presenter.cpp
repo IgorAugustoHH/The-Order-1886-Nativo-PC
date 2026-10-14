@@ -684,18 +684,6 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
                                vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
         auto blit = MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height);
-        if (BbSettings::Get().letterbox.load()) {
-            // TOport: the PS4's 2.40:1 framing. The camera has square pixels and the console
-            // shows the central 800 of 1080 lines: 140/1080 of the frame stays black (cleared
-            // above) at the top and bottom, the HUD there included.
-            const auto crop = [](s32 a, s32 b) { return s32(std::lround((b - a) * 140.0 / 1080.0)); };
-            const s32 src_cut = crop(blit.srcOffsets[0].y, blit.srcOffsets[1].y);
-            const s32 dst_cut = crop(blit.dstOffsets[0].y, blit.dstOffsets[1].y);
-            blit.srcOffsets[0].y += src_cut;
-            blit.srcOffsets[1].y -= src_cut;
-            blit.dstOffsets[0].y += dst_cut;
-            blit.dstOffsets[1].y -= dst_cut;
-        }
         cmdbuf.blitImage(frame->image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
         // bbport: the settings menu / FPS counter over the frame, at display resolution.

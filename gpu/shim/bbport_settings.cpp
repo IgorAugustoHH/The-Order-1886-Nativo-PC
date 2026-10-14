@@ -80,8 +80,6 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.photo_camera = i != 0;
     } else if (key == "fast_loading") {
         v.fast_loading = i != 0;
-    } else if (key == "letterbox") {
-        v.letterbox = i != 0;
     } else if (key == "fps_limit") {
         v.fps_limit = i <= 30 ? 30u : i <= 60 ? 60u : i <= 90 ? 90u : 120u;
     } else if (key == "output_res") {
@@ -250,10 +248,9 @@ void Save() {
     // TOport: read by run.py at start (environment for the renderer, patches and runtime).
     std::fprintf(file,
                  "order_aa=%s\norder_resolution=%d\ngame_language=%d\nphoto_camera=%d\n"
-                 "fast_loading=%d\nfps_limit=%u\nletterbox=%d\n",
+                 "fast_loading=%d\nfps_limit=%u\n",
                  OrderAaName(v.order_aa), v.order_resolution.load(), v.game_language.load(),
-                 int(v.photo_camera.load()), int(v.fast_loading.load()), v.fps_limit.load(),
-                 int(v.letterbox.load()));
+                 int(v.photo_camera.load()), int(v.fast_loading.load()), v.fps_limit.load());
     std::fclose(file);
 }
 
