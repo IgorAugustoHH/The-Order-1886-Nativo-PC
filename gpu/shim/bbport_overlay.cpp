@@ -215,13 +215,12 @@ void Menu() {
     if (s.order_aa != BbSettings::OrderAaGame && s.dlss_problem.load()) {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", s.dlss_problem.load());
     }
-    static const int resolution_values[] = {720, 1080, 1440, 2160};
+    static const int resolution_values[] = {720, 1080, 2160};
     static const char* const resolution_names[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080",
-                                                   "2560 x 1440 (experimental)",
                                                    "3840 x 2160 (experimental)"};
     OrderCombo("res", "Resolução do jogo", s.order_resolution, resolution_values,
                resolution_names);
-    Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. 2560x1440 e 3840x2160 são experimentais (DLSS ainda não validado, mais memória de vídeo). Reinicie para aplicar.");
+    Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. 3840x2160 é experimental: modo 4K do próprio jogo, pede muito mais memória (DLSS ainda não validado). Reinicie para aplicar.");
 
     ImGui::SeparatorText("Desempenho");
     static const unsigned fps_values[] = {30, 60, 90, 120};

@@ -12,13 +12,13 @@ struct Size {
     bool operator==(const Size&) const = default;
 };
 /// The Order: 1886's full scene size, the game resolution patched at start (BB_ORDER_RESOLUTION:
-/// 720 the game's default, 1080, 1440 and 2160 experimental). The scene targets, their proxies
+/// 720 the game's default, 1080, 2160 experimental). The scene targets, their proxies
 /// and DLSS follow it.
 inline Size GameSize() {
     static const Size size = [] {
         const char* env = std::getenv("BB_ORDER_RESOLUTION");
         const int lines = env ? std::atoi(env) : 0;
-        return lines == 2160 ? Size{3840, 2160} : lines == 1440 ? Size{2560, 1440}
+        return lines == 2160 ? Size{3840, 2160}
              : lines == 1080 ? Size{1920, 1080} : Size{1280, 720};
     }();
     return size;

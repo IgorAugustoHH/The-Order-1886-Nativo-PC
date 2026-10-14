@@ -16,11 +16,13 @@ WRITES_1080 = [
 # movl $imm32, -0x428(%rbp) / -0x424(%rbp): the rectangle's width and height
 RECT_WIDTH = (0x44cf65, bytes.fromhex('c7 85 d8 fb ff ff 80 07 00 00'))
 RECT_HEIGHT = (0x44cf6f, bytes.fromhex('c7 85 dc fb ff ff 38 04 00 00'))
-# movl $imm32, -0x37c(%rbp) / -0x378(%rbp): the 1920x1080 branch's display size
-SIZE_WIDTH = (0x44cf3d, bytes.fromhex('c7 85 84 fc ff ff 80 07 00 00'))
-SIZE_HEIGHT = (0x44cf47, bytes.fromhex('c7 85 88 fc ff ff 38 04 00 00'))
-# BB_ORDER_RESOLUTION=1440/2160 (experimental): the same branch with other sizes.
-SIZES = {'1080': (1920, 1080), '1440': (2560, 1440), '2160': (3840, 2160)}
+# BB_ORDER_RESOLUTION=2160 (experimental): the game's own 3840x2160 branch (-use4K, flags bit
+# 9), reached past the 1080p test, instead of patching sizes (1440p that way gave artifacts).
+WRITES_2160 = [
+    (0x44cef3, bytes.fromhex('a8 80 75 41'), bytes.fromhex('a8 80 eb 41')),  # always custom size
+    (0x44cf38, bytes.fromhex('f6 c4 01 74 3e'), bytes.fromhex('f6 c4 01 eb 3e')),  # skip 1080p
+    (0x44cf7b, bytes.fromhex('f6 c4 02 74 46'), bytes.fromhex('f6 c4 02 90 90')),  # 3840x2160
+]
 RECT_Y = (0x44cf5b, bytes.fromhex('c7 85 d4 fb ff ff 00 00 00 00'))  # -0x42c(%rbp)
 
 
@@ -36,27 +38,18 @@ def elf_offset(elf, target, length):
 
 
 def resolution_writes(elf, mode):
-    if mode not in SIZES:
+    if mode not in ('1080', '2160'):
         raise ValueError(f'BB_ORDER_RESOLUTION: modo nao suportado: {mode}')
     if hashlib.sha256(elf).hexdigest() != ELF_SHA256:
         raise ValueError('Resolucao: eboot diferente da imagem analisada (CUSA00785 01.02)')
     out = []
-    for target, original, replacement in WRITES_1080:
+    for target, original, replacement in (WRITES_2160 if mode == '2160' else WRITES_1080):
         start = elf_offset(elf, target, len(original))
         if elf[start:start + len(original)] != original:
             raise ValueError(f'Resolucao: bytes originais divergem em {target:#x}')
         out.append((target, replacement))
-    width, height = SIZES[mode]
-    if mode != '1080':
-        for (target, original), value in ((SIZE_WIDTH, width), (SIZE_HEIGHT, height),
-                                          (RECT_WIDTH, width), (RECT_HEIGHT, height)):
-            start = elf_offset(elf, target, len(original))
-            if elf[start:start + len(original)] != original:
-                raise ValueError(f'Resolucao: instrucao de tamanho diverge em {target:#x}')
-            out.append((target + 6, struct.pack('<I', value)))
-        print(f'The Order: resolucao forcada para {width}x{height} (EXPERIMENTAL, {len(out)} escritas)')
-    else:
-        print('The Order: resolucao forcada para 1920x1080 (2 escritas)')
+    print('The Order: resolucao forcada para 3840x2160 (ramo -use4K do jogo, EXPERIMENTAL, 3 escritas)'
+          if mode == '2160' else 'The Order: resolucao forcada para 1920x1080 (2 escritas)')
     rect = os.environ.get('BB_ORDER_SCENE_RECT')
     if rect:
         # WxH or WxH+Y (vertical offset, e.g. 1920x800+140 for the PS4's 2.40:1 letterbox).

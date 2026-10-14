@@ -147,9 +147,12 @@ def toport_environment(env, config):
         env.setdefault('BB_DLSS', '1')
         if aa in ('quality', 'balanced', 'performance', 'ultra'):
             env.setdefault('BB_ORDER_DLSS_MODE', aa)
-    # 720 is the game's own default; 1440 and 2160 are experimental (scripts/order_resolution.py).
-    if setting('order_resolution', '1080') in ('1080', '1440', '2160'):
-        env.setdefault('BB_ORDER_RESOLUTION', setting('order_resolution', '1080'))
+    # 720 is the game's own default; 2160 (experimental) is its -use4K branch, flag included.
+    resolution = setting('order_resolution', '1080')
+    if resolution in ('1080', '2160'):
+        env.setdefault('BB_ORDER_RESOLUTION', resolution)
+    if resolution == '2160':
+        env.setdefault('BB_GAME_ARGS', '-use4K')
     env.setdefault('BB_LANGUAGE', setting('game_language', '17'))
     env.setdefault('BB_ORDER_PHOTO_CAMERA_UNLOCK', setting('photo_camera', '1'))
     if setting('fast_loading', '1') == '1':
