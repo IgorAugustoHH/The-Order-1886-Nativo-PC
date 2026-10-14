@@ -216,11 +216,13 @@ void Menu() {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", s.dlss_problem.load());
     }
     // 4K (BB_ORDER_RESOLUTION=2160, the game's -use4K branch) is left out: artifacts on PC.
-    static const int resolution_values[] = {720, 1080};
-    static const char* const resolution_names[] = {"1280 x 720 (padrão do jogo)", "1920 x 1080"};
+    static const int resolution_values[] = {800, 1080, 720};
+    static const char* const resolution_names[] = {"Original do PS4: 1920 x 800 (2.40:1)",
+                                                   "1920 x 1080 tela cheia (16:9)",
+                                                   "1280 x 720 tela cheia (16:9)"};
     OrderCombo("res", "Resolução do jogo", s.order_resolution, resolution_values,
                resolution_names);
-    Hint("Resolução interna escolhida pelo próprio jogo ao iniciar. Reinicie para aplicar.");
+    Hint("Original: como no PS4, cena em 2.40:1 com faixas pretas, e a iluminação correta. As opções 16:9 usam os patches do illusion0001 que vieram no executável do dump; o autor avisa que 1080p em 16:9 tem problemas visuais. Reinicie para aplicar.");
 
     ImGui::SeparatorText("Desempenho");
     static const unsigned fps_values[] = {30, 60, 90, 120};

@@ -104,7 +104,7 @@ show_fps=1
 output_res=1920x1080
 live_resolution=0
 order_aa=quality
-order_resolution=1080
+order_resolution=retail
 game_language=17
 photo_camera=1
 fast_loading=1
@@ -147,10 +147,10 @@ def toport_environment(env, config):
         env.setdefault('BB_DLSS', '1')
         if aa in ('quality', 'balanced', 'performance', 'ultra'):
             env.setdefault('BB_ORDER_DLSS_MODE', aa)
-    # 720 is the game's own default; 2160 (experimental) is its -use4K branch, flag included.
-    resolution = setting('order_resolution', '1080')
+    # 720 and 1080 keep the dump eboot's 16:9 patches (illusion0001); 2160 is the -use4K branch.
+    resolution = setting('order_resolution', 'retail')
     # 2160 stays reachable only through bbport.ini/BB_ORDER_RESOLUTION for investigation.
-    if resolution in ('1080', '2160'):
+    if resolution in ('retail', '1080', '2160'):  # retail: original 1080p + 2.40:1 camera
         env.setdefault('BB_ORDER_RESOLUTION', resolution)
     if resolution == '2160':
         env.setdefault('BB_GAME_ARGS', '-use4K')

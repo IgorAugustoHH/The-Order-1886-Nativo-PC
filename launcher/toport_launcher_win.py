@@ -91,7 +91,8 @@ def run_command():
 AA_MODES = [('game', 'TAA original do jogo'), ('dlaa', 'DLSS DLAA (resolução nativa)'),
             ('quality', 'DLSS Qualidade'), ('balanced', 'DLSS Equilibrado'),
             ('performance', 'DLSS Desempenho'), ('ultra', 'DLSS Ultra Desempenho')]
-RESOLUTIONS = [('720', '1280 x 720 (padrão do jogo)'), ('1080', '1920 x 1080')]
+RESOLUTIONS = [('retail', 'Original do PS4: 1920 x 800 (2.40:1)'),
+               ('1080', '1920 x 1080 tela cheia (16:9)'), ('720', '1280 x 720 tela cheia (16:9)')]
 FPS_LIMITS = [('30', '30 FPS'), ('60', '60 FPS'), ('90', '90 FPS'), ('120', '120 FPS')]
 # PS4 system language codes (gpu/shim/bbport_settings.h GameLanguages).
 LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1', 'English (US)'),
@@ -102,7 +103,7 @@ LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1'
              ('21', 'العربية (Arabic)'), ('0', '日本語 (Japanese)'), ('9', '한국어 (Korean)'),
              ('10', '中文 繁體 (Traditional Chinese)'), ('11', '中文 简体 (Simplified Chinese)')]
 DISPLAY_MODES = [('1', 'Tela cheia sem bordas'), ('2', 'Tela cheia exclusiva'), ('0', 'Janela')]
-INI_DEFAULTS = {'order_aa': 'quality', 'order_resolution': '1080', 'fps_limit': '60',
+INI_DEFAULTS = {'order_aa': 'quality', 'order_resolution': 'retail', 'fps_limit': '60',
                 'game_language': '17', 'photo_camera': '1', 'fast_loading': '1', 'show_fps': '1',
                 'preload_shaders': '1'}
 INI_FLAGS = ('photo_camera', 'fast_loading', 'show_fps', 'preload_shaders')
@@ -119,8 +120,8 @@ def read_ini():
                 values[key] = value
     except OSError:
         pass
-    if values.get('order_resolution') not in ('720', '1080'):
-        values['order_resolution'] = '1080'  # 1440p/4K tests left out of the launcher
+    if values.get('order_resolution') not in ('retail', '720', '1080'):
+        values['order_resolution'] = 'retail'  # 1440p/4K tests left out of the launcher
     return values
 
 
@@ -574,8 +575,9 @@ class Launcher:
                  'saída (mais FPS). TAA original é o anti-aliasing do PS4.')
         self.section(f, 'Resolução')
         self.row(f, 'Resolução do jogo', self.choice(f, 'order_resolution', 'ini', RESOLUTIONS),
-                 'O próprio jogo escolhe a resolução interna ao iniciar. 1920x1080 é a recomendada '
-                 '(1440p e 4K foram testados e dão artefatos neste port).')
+                 'Original: como no PS4, cena em 2.40:1 com faixas pretas e a iluminação correta '
+                 '(recomendado). As opções 16:9 usam os patches do illusion0001 que vieram no '
+                 'executável do dump; em 1080p o próprio autor avisa que há problemas visuais.')
         self.note(f, 'O jogo foi feito com câmera em 2.40:1 no PS4; o TOport mostra a cena inteira em '
                      '16:9 (a versão nativa em 1920x800 está prevista).')
 

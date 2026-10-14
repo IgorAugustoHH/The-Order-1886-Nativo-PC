@@ -69,7 +69,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
             }
         }
     } else if (key == "order_resolution") {
-        v.order_resolution = i == 720 ? 720 : 1080;
+        v.order_resolution = value == "retail" ? 800 : i == 720 ? 720 : 1080;
     } else if (key == "game_language") {
         for (const auto& language : GameLanguages) {
             if (language.code == i) {
@@ -251,9 +251,12 @@ void Save() {
                                                   : v.live_resolution ? "1" : "0");
     // TOport: read by run.py at start (environment for the renderer, patches and runtime).
     std::fprintf(file,
-                 "order_aa=%s\norder_resolution=%d\ngame_language=%d\nphoto_camera=%d\n"
+                 "order_aa=%s\norder_resolution=%s\ngame_language=%d\nphoto_camera=%d\n"
                  "fast_loading=%d\nfps_limit=%u\npreload_shaders=%d\n",
-                 OrderAaName(v.order_aa), v.order_resolution.load(), v.game_language.load(),
+                 OrderAaName(v.order_aa),
+                 v.order_resolution == 800 ? "retail"
+                 : v.order_resolution == 720 ? "720" : "1080",
+                 v.game_language.load(),
                  int(v.photo_camera.load()), int(v.fast_loading.load()), v.fps_limit.load(),
                  int(v.preload_shaders.load()));
     std::fclose(file);
