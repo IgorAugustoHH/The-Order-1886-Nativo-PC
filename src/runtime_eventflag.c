@@ -116,7 +116,7 @@ static ABI int32_t ef_poll(EventFlag *ef,uint64_t bits,uint32_t mode,uint64_t *r
     return 0;
 }
 /* timeout: microseconds, updated with the time left; NULL waits forever. */
-static ABI int32_t ef_wait(EventFlag *ef,uint64_t bits,uint32_t mode,uint64_t *result,uint32_t *timeout) {
+static ABI int32_t ef_wait_inner(EventFlag *ef,uint64_t bits,uint32_t mode,uint64_t *result,uint32_t *timeout) {
     if (!bits || !valid_mode(mode)) return ERR(22);
     pthread_mutex_lock(&lock);
     EventFlag *e=find(ef);
@@ -148,6 +148,12 @@ static ABI int32_t ef_wait(EventFlag *ef,uint64_t bits,uint32_t mode,uint64_t *r
     return r;
 }
 
+static ABI int32_t ef_wait(EventFlag *ef,uint64_t bits,uint32_t mode,uint64_t *result,uint32_t *timeout) {
+    const uint64_t wait_start=runtime_wait_begin();
+    const int32_t r=ef_wait_inner(ef,bits,mode,result,timeout);
+    runtime_wait_end("event flag wait",wait_start,"bits",(long long)bits);
+    return r;
+}
 static const RuntimeExport exports[]={
     {"sceKernelCreateEventFlag",ef_create}, {"sceKernelDeleteEventFlag",ef_delete},
     {"sceKernelSetEventFlag",ef_set}, {"sceKernelClearEventFlag",ef_clear},
