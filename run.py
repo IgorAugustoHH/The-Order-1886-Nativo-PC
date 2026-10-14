@@ -87,8 +87,29 @@ TOPORT_DEFAULTS = {
     'BB_VK_SEGMENT_KB': '64', 'BB_ASYNC_SUBMIT': '0', 'BB_EMPTY_IMAGE_QUEUE_FAST': '0',
     'BB_GC_IDLE_SECONDS': '0', 'BB_VMA_BLOCK_MB': '0', 'BB_VMA_DEDICATED_MB': '0',
     'BB_VBLANK_HZ': '0', 'BB_FULLSCREEN': '1', 'BB_JITTER': '0', 'BB_OBJECT_MOTION': '0',
-    'BB_FRAME_STATS': '1',
+    'BB_FRAME_STATS': '1', 'BB_DMA_TRACE': '1', 'BB_PERM_TRACE': '1', 'BB_TIMEOUT': '0',
+    # Third-party Vulkan layers (overlays, recorders) stay out, as in every approved run.
+    'VK_LOADER_LAYERS_DISABLE': '~implicit~',
 }
+
+# A new bbport.ini starts from the settings of the approved runs (teste-mira/pt-dlss.ini).
+TOPORT_INI = '''# bbport settings (in-game menu: Insert / L3+R3)
+upscaler=dlss
+preset=3
+sharpen=1
+sharpness=0.30
+jitter=0
+object_motion=0
+show_fps=1
+output_res=1920x1080
+live_resolution=0
+order_aa=quality
+order_resolution=1080
+game_language=17
+photo_camera=1
+fast_loading=1
+fps_limit=60
+'''
 
 
 def toport_environment(env, config):
@@ -96,11 +117,22 @@ def toport_environment(env, config):
     the renderer, patches.py and the runtime read."""
     if env.get('BB_TOPORT', '1') != '1':
         return
+    if not Path(config).is_file():
+        Path(config).parent.mkdir(parents=True, exist_ok=True)
+        Path(config).write_text(TOPORT_INI, encoding='utf-8')
     setting = lambda key, default: ini_value(config, key) or default
     for key, value in TOPORT_DEFAULTS.items():
         env.setdefault(key, value)
+    # Runtime optimization mask of the approved runs (16384: small read-only buffer copies
+    # stay off the recording thread), read from a file the runtime watches.
+    if not env.get('BB_TOGGLE_FILE'):
+        toggles = Path(config).parent / 'toggles.txt'
+        toggles.write_text('16384', encoding='utf-8')
+        env['BB_TOGGLE_FILE'] = str(toggles)
+    env.setdefault('BB_WAIT_TRACE', '1')
+    env.setdefault('BB_WAIT_TRACE_FILE', str(Path(config).parent / 'esperas.txt'))
     aa = setting('order_aa', 'quality')
-    env.setdefault('BB_UPSCALER', 'off')
+    env.setdefault('BB_UPSCALER', 'none')
     if aa == 'game':
         env.setdefault('BB_ORDER_DLSS', '0')
     else:
