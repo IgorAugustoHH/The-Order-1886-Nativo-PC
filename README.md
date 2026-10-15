@@ -31,7 +31,7 @@ sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR
 - **Carregamento acelerado:** texturas e iluminação chegam muito mais rápido, sem perder nada da cena.
 - **Pré-carga de shaders:** ao abrir, o jogo já monta os shaders das últimas sessões.
 - **23 idiomas** do sistema do PS4, com português do Brasil por padrão.
-- **Menu dentro do jogo** com **Select** (controle) ou **Insert** (teclado): troque DLSS, resolução,
+- **Menu dentro do jogo** com **Insert** (teclado): troque DLSS, resolução,
   limite de quadros e idioma sem sair do jogo.
 - **Câmera livre nas cutscenes** (modo foto).
 - Controle de PlayStation, Xbox ou teclado.
@@ -52,7 +52,7 @@ sem scripts de configuração: você aponta a pasta do seu jogo e clica em JOGAR
 - **Arquivo de paginação do Windows num SSD/NVMe.** Num HD mecânico o jogo engasga quando a RAM aperta.
 
 ## Como jogar
-1. Baixe `TOport-v….zip` em **[Releases](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases/latest)**.
+1. Baixe `TOport-Windows.zip` em **[Releases](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases/latest)**.
 2. Extraia em qualquer pasta (de preferência num SSD).
 3. Abra **`TOport.exe`**.
 4. Em **Jogo e idioma**, escolha a pasta do seu dump **01.02** (a que tem `eboot.bin`). O launcher
@@ -81,7 +81,7 @@ Abra uma [issue](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/issue
 ## Compilar (Windows)
 1. MSYS2 com o ambiente CLANG64 e os pacotes listados em `packaging/windows/README.md`.
 2. `bash build.sh` (com `MSYS2_ROOT` apontando para o MSYS2, se não estiver em `C:\msys64`).
-3. `bash packaging/windows/package_toport.sh` gera `dist/TOport/` e `dist/TOport.zip`.
+3. `bash packaging/windows/package_toport.sh` gera `dist/TOport/` e `dist/TOport-Windows.zip`.
    Para desenvolvimento: `BB_GAME_DIR=<pasta do CUSA00785> python run.py`.
 
 ## Aviso legal

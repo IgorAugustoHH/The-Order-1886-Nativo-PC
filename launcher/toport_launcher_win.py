@@ -3,7 +3,7 @@
 """TOport: launcher for The Order: 1886 on Windows (Tkinter), in the style of the BBPort one.
 
 The player picks the folder of their own dump (CUSA00785, version 01.02) and the settings the
-in-game menu (Insert / Select) also edits; they live in bbport.ini next to this program, and
+in-game menu (Insert) also edits; they live in bbport.ini next to this program, and
 run.py turns them into the port's environment. Launcher-only options (game folder, display
 mode) are in toport.json in the same folder. The banner shows the dump's own art
 (sce_sys/pic0.png): nothing of the game is shipped with the port.
@@ -22,6 +22,8 @@ import struct
 import subprocess
 import sys
 import threading
+import urllib.request
+import webbrowser
 
 FROZEN = getattr(sys, 'frozen', False)
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
@@ -33,8 +35,36 @@ ASSETS = PORT_DIR / 'launcher'
 TITLE_ID = 'CUSA00785'
 GAME_VERSION = '01.02'
 VERSION = '0.1.0'
+# Releases (pre-releases included): the launcher offers a newer one on its sidebar.
+RELEASES_API = 'https://api.github.com/repos/IgorAugustoHH/The-Order-1886-Nativo-PC/releases?per_page=5'
+RELEASES_PAGE = 'https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/releases'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+
+def default_ui_language():
+    """pt for Portuguese Windows, en otherwise."""
+    try:
+        primary = ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3ff
+    except (AttributeError, OSError):
+        return 'en'
+    return 'pt' if primary == 0x16 else 'en'
+
+
+def saved_ui_language():
+    try:
+        value = json.loads(LAUNCHER_FILE.read_text(encoding='utf-8')).get('ui_language')
+    except (OSError, ValueError):
+        value = None
+    return value if value in ('pt', 'en') else default_ui_language()
+
+
+UI_LANG = saved_ui_language()
+
+
+def T(pt, en):
+    """The launcher's text in its language (Portuguese or English)."""
+    return en if UI_LANG == 'en' else pt
 
 
 # ---------------------------------------------------------------------------------------------
@@ -88,11 +118,22 @@ def run_command():
 # ---------------------------------------------------------------------------------------------
 # Settings: bbport.ini (shared with the in-game menu) and toport.json (launcher only).
 
-AA_MODES = [('game', 'TAA original do jogo'), ('dlaa', 'DLSS DLAA (resolução nativa)'),
-            ('quality', 'DLSS Qualidade'), ('balanced', 'DLSS Equilibrado'),
-            ('performance', 'DLSS Desempenho'), ('ultra', 'DLSS Ultra Desempenho')]
-RESOLUTIONS = [('retail', 'Original do PS4: 1920 x 800 (2.40:1)'),
-               ('1080', '1920 x 1080 tela cheia (16:9)'), ('720', '1280 x 720 tela cheia (16:9)')]
+def AA_MODES():
+    return [('game', T('TAA original do jogo', "The game's original TAA")),
+            ('dlaa', T('DLSS DLAA (resolução nativa)', 'DLSS DLAA (native resolution)')),
+            ('quality', T('DLSS Qualidade', 'DLSS Quality')),
+            ('balanced', T('DLSS Equilibrado', 'DLSS Balanced')),
+            ('performance', T('DLSS Desempenho', 'DLSS Performance')),
+            ('ultra', T('DLSS Ultra Desempenho', 'DLSS Ultra Performance'))]
+
+
+def RESOLUTIONS():
+    return [('retail', T('Original do PS4: 1920 x 800 (2.40:1)', 'PS4 original: 1920 x 800 (2.40:1)')),
+            ('1080', T('1920 x 1080 tela cheia (16:9)', '1920 x 1080 full screen (16:9)')),
+            ('720', T('1280 x 720 tela cheia (16:9)', '1280 x 720 full screen (16:9)'))]
+
+
+UI_LANGUAGES = [('pt', 'Português'), ('en', 'English')]
 FPS_LIMITS = [('30', '30 FPS'), ('60', '60 FPS'), ('90', '90 FPS'), ('120', '120 FPS')]
 # PS4 system language codes (gpu/shim/bbport_settings.h GameLanguages).
 LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1', 'English (US)'),
@@ -102,13 +143,15 @@ LANGUAGES = [('17', 'Português (Brasil)'), ('7', 'Português (Portugal)'), ('1'
              ('12', 'Suomi'), ('13', 'Svenska'), ('14', 'Dansk'), ('15', 'Norsk'),
              ('21', 'العربية (Arabic)'), ('0', '日本語 (Japanese)'), ('9', '한국어 (Korean)'),
              ('10', '中文 繁體 (Traditional Chinese)'), ('11', '中文 简体 (Simplified Chinese)')]
-DISPLAY_MODES = [('1', 'Tela cheia sem bordas'), ('2', 'Tela cheia exclusiva'), ('0', 'Janela')]
+def DISPLAY_MODES():
+    return [('1', T('Tela cheia sem bordas', 'Borderless full screen')),
+            ('2', T('Tela cheia exclusiva', 'Exclusive full screen')), ('0', T('Janela', 'Window'))]
 INI_DEFAULTS = {'order_aa': 'quality', 'order_resolution': 'retail', 'fps_limit': '60',
                 'game_language': '17', 'photo_camera': '1', 'fast_loading': '1', 'show_fps': '1',
                 'preload_shaders': '1'}
 INI_FLAGS = ('photo_camera', 'fast_loading', 'show_fps', 'preload_shaders')
 APP_DEFAULTS = {'game_dir': str(PORT_DIR.parent / TITLE_ID), 'display': '1',
-                'close_on_play': False}
+                'close_on_play': False, 'ui_language': UI_LANG}
 
 
 def read_ini():
@@ -130,7 +173,7 @@ def write_ini(changes):
     try:
         lines = CONFIG.read_text(encoding='utf-8', errors='replace').splitlines()
     except OSError:
-        lines = ['# bbport settings (in-game menu: Insert / Select)']
+        lines = ['# bbport settings (in-game menu: Insert)']
     pending = dict(changes)
     for i, line in enumerate(lines):
         key = line.partition('=')[0].strip()
@@ -175,18 +218,21 @@ def check_game(folder):
     """(ok, message) for a game folder: the port is verified on CUSA00785 01.02 only."""
     folder = Path(folder or '.')
     if not (folder / 'eboot.bin').is_file():
-        return False, 'Escolha a pasta do seu dump (CUSA00785) em "Jogo".'
+        return False, T('Escolha a pasta do seu dump (CUSA00785) em "Jogo".', 'Choose your dump folder (CUSA00785) in "Game & language".')
     try:
         sfo = read_sfo(folder / 'sce_sys' / 'param.sfo')
     except (OSError, ValueError) as error:
-        return False, f'Não foi possível ler sce_sys/param.sfo ({error}).'
+        return False, T(f'Não foi possível ler sce_sys/param.sfo ({error}).', f'Could not read sce_sys/param.sfo ({error}).')
     title, version = sfo.get('TITLE_ID'), sfo.get('APP_VER')
     if title != TITLE_ID:
-        return False, f'Este dump é {title}; o TOport roda The Order: 1886 ({TITLE_ID}).'
+        return False, T(f'Este dump é {title}; o TOport roda The Order: 1886 ({TITLE_ID}).',
+                        f'This dump is {title}; TOport runs The Order: 1886 ({TITLE_ID}).')
     if version != GAME_VERSION:
-        return False, (f'Versão {version}: o TOport foi verificado na {GAME_VERSION} '
-                       '(as correções do executável recusam outras versões).')
-    return True, f'The Order: 1886 · {TITLE_ID} · versão {version}'
+        return False, T(f'Versão {version}: o TOport foi verificado na {GAME_VERSION} '
+                        '(as correções do executável recusam outras versões).',
+                        f'Version {version}: TOport is verified on {GAME_VERSION} '
+                        '(the executable fixes refuse other versions).')
+    return True, T(f'The Order: 1886 · {TITLE_ID} · versão {version}', f'The Order: 1886 · {TITLE_ID} · version {version}')
 
 
 def game_environment(launcher):
@@ -252,7 +298,7 @@ class Launcher:
         self.process = self.job = None
         self.output = queue.Queue()
         self.ui_calls = queue.Queue()
-        self.gpu_text = '• Verificando a placa de vídeo…'
+        self.gpu_text = T('• Verificando a placa de vídeo…', '• Checking the graphics card…')
         self.banner_source = self.banner_scaled = None
         self.banner_size = None
         root.title(f'The Order: 1886 — TOport {VERSION}')
@@ -267,6 +313,7 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         threading.Thread(target=self.detect_gpu, daemon=True).start()
+        threading.Thread(target=self.check_update, daemon=True).start()
 
     def px(self, size):
         return int(size * self.dpi)
@@ -306,8 +353,12 @@ class Launcher:
         ttk = self.ttk
         s = ttk.Style(self.root)
         s.theme_use('clam')
-        self.check_images()
-        s.element_create('To.indicator', 'image', self.check_off, ('selected', self.check_on), sticky='')
+        # The element is created once per Tk interpreter (a language switch rebuilds the window):
+        # its images stay referenced on the root.
+        if not hasattr(self.root, 'toport_checks'):
+            self.check_images()
+            self.root.toport_checks = (self.check_off, self.check_on)
+            s.element_create('To.indicator', 'image', self.check_off, ('selected', self.check_on), sticky='')
         s.layout('TCheckbutton', [('Checkbutton.padding', {'sticky': 'nswe', 'children': [
             ('To.indicator', {'side': 'left', 'sticky': ''}),
             ('Checkbutton.focus', {'side': 'left', 'sticky': 'w', 'children': [
@@ -428,6 +479,7 @@ class Launcher:
     def build(self):
         tk, ttk = self.tk, self.ttk
         side = tk.Frame(self.root, bg=BG, width=self.px(220))
+        self.side = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
         try:
@@ -444,12 +496,13 @@ class Launcher:
             tk.Label(side, image=self.logo, bg=BG).pack(anchor='w', padx=18, pady=(20, 6))
         tk.Label(side, text='THE ORDER: 1886', bg=BG, fg=GOLD, font=('Georgia', 15)).pack(
             anchor='w', padx=22, pady=(4 if self.logo else 24, 0))
-        tk.Label(side, text=f'TOport · port nativo · v{VERSION}', bg=BG, fg=MUTED,
+        tk.Label(side, text=T(f'TOport · port nativo · v{VERSION}', f'TOport · native port · v{VERSION}'), bg=BG, fg=MUTED,
                  font=('Segoe UI', 9)).pack(anchor='w', padx=22, pady=(0, 18))
         self.nav, self.current_page = {}, None
-        for name, title in (('play', 'Jogar'), ('graphics', 'Imagem'),
-                            ('display', 'Tela e desempenho'), ('game', 'Jogo e idioma'),
-                            ('log', 'Registro')):
+        for name, title in (('play', T('Jogar', 'Play')), ('graphics', T('Imagem', 'Graphics')),
+                            ('display', T('Tela e desempenho', 'Display & performance')),
+                            ('game', T('Jogo e idioma', 'Game & language')),
+                            ('log', T('Registro', 'Log'))):
             item = tk.Label(side, text='    ' + title, bg=BG, fg=TEXT, anchor='w', font=('Segoe UI', 11),
                             pady=10, cursor='hand2')
             item.pack(fill='x')
@@ -458,9 +511,10 @@ class Launcher:
             item.bind('<Leave>', lambda _e, n=name: n != self.current_page and self.nav[n].configure(bg=BG))
             self.nav[name] = item
         tk.Frame(side, bg=BG).pack(fill='both', expand=True)
-        tk.Label(side, text='No jogo: Insert ou Select\nabre o menu do TOport.\nF9 alterna o limite de quadros.',
+        self.side_note = tk.Label(side, text=T('No jogo: Insert\nabre o menu do TOport.\nF9 alterna o limite de quadros.', 'In game: Insert\nopens the TOport menu.\nF9 cycles the frame limit.'),
                  bg=BG, fg=MUTED, font=('Segoe UI', 9), justify='left',
-                 wraplength=self.px(200)).pack(anchor='w', padx=22, pady=(0, 18))
+                 wraplength=self.px(200))
+        self.side_note.pack(anchor='w', padx=22, pady=(0, 18))
 
         right = tk.Frame(self.root, bg=PANEL)
         right.pack(side='left', fill='both', expand=True)
@@ -469,9 +523,9 @@ class Launcher:
         bar.pack_propagate(False)
         self.status = tk.Label(bar, text='', bg=BG, fg=MUTED, font=('Segoe UI', 10), anchor='w', justify='left')
         self.status.pack(side='left', padx=24)
-        self.play_button = ttk.Button(bar, text='JOGAR', style='Play.TButton', command=self.play)
+        self.play_button = ttk.Button(bar, text=T('JOGAR', 'PLAY'), style='Play.TButton', command=self.play)
         self.play_button.pack(side='right', padx=(10, 24), pady=11)
-        self.stop_button = ttk.Button(bar, text='Parar', command=self.stop, state='disabled')
+        self.stop_button = ttk.Button(bar, text=T('Parar', 'Stop'), command=self.stop, state='disabled')
         self.stop_button.pack(side='right', pady=11)
         self.content = tk.Frame(right, bg=PANEL)
         self.content.pack(fill='both', expand=True)
@@ -514,19 +568,19 @@ class Launcher:
         body.columnconfigure(1, weight=2)
         info = ttk.Frame(body)
         info.grid(row=0, column=0, sticky='nw', padx=(0, 24))
-        ttk.Label(info, text='Verificação', style='Section.TLabel').pack(anchor='w', pady=(0, 6))
+        ttk.Label(info, text=T('Verificação', 'Ready check'), style='Section.TLabel').pack(anchor='w', pady=(0, 6))
         self.checks = {}
         for key in ('game', 'saves', 'gpu', 'dlss'):
             self.checks[key] = ttk.Label(info, text='', justify='left', wraplength=self.px(440))
             self.checks[key].pack(anchor='w', pady=3)
         quick = ttk.Frame(body)
         quick.grid(row=0, column=1, sticky='nw')
-        ttk.Label(quick, text='Principal', style='Section.TLabel').grid(
+        ttk.Label(quick, text=T('Principal', 'Quick settings'), style='Section.TLabel').grid(
             row=0, column=0, columnspan=2, sticky='w', pady=(0, 2))
-        self.row(quick, 'Anti-aliasing', self.choice(quick, 'order_aa', 'ini', AA_MODES, 26))
-        self.row(quick, 'Resolução', self.choice(quick, 'order_resolution', 'ini', RESOLUTIONS, 26))
-        self.row(quick, 'Limite de quadros', self.choice(quick, 'fps_limit', 'ini', FPS_LIMITS, 26))
-        self.row(quick, 'Idioma', self.choice(quick, 'game_language', 'ini', LANGUAGES, 26))
+        self.row(quick, T('Anti-aliasing', 'Anti-aliasing'), self.choice(quick, 'order_aa', 'ini', AA_MODES(), 26))
+        self.row(quick, T('Resolução', 'Resolution'), self.choice(quick, 'order_resolution', 'ini', RESOLUTIONS(), 26))
+        self.row(quick, T('Limite de quadros', 'Frame limit'), self.choice(quick, 'fps_limit', 'ini', FPS_LIMITS, 26))
+        self.row(quick, T('Idioma', 'Game language'), self.choice(quick, 'game_language', 'ini', LANGUAGES, 26))
         self.var('game_dir', 'app').trace_add('write', lambda *_a: (self.refresh_status(), self.draw_banner()))
         self.var('order_aa', 'ini').trace_add('write', lambda *_a: self.refresh_status())
 
@@ -558,79 +612,106 @@ class Launcher:
                                    stipple=stipple)
             c.create_rectangle(0, h - 24, w, h, fill=PANEL, outline='')
         else:
-            c.create_text(w // 2, h // 2 - 20, text='Escolha a pasta do seu dump em "Jogo e idioma"',
+            c.create_text(w // 2, h // 2 - 20, text=T('Escolha a pasta do seu dump em "Jogo e idioma"', 'Choose your dump folder in "Game & language"'),
                           fill=MUTED, font=('Segoe UI', 11))
         c.create_text(32, h - 72, text='The Order: 1886', anchor='w', fill='#f2ead9', font=('Georgia', 34))
         ok, message = check_game(self.var('game_dir', 'app').get())
-        c.create_text(35, h - 30, text=message if ok else 'Pasta do jogo não definida', anchor='w',
+        c.create_text(35, h - 30, text=message if ok else T('Pasta do jogo não definida', 'Game folder not set'), anchor='w',
                       fill=GOLD, font=('Segoe UI', 11))
 
     def build_graphics(self):
-        f = self.page('graphics', 'Imagem',
-                      'Salvo em bbport.ini; o menu do jogo (Insert ou Select) altera os mesmos valores.')
+        f = self.page('graphics', T('Imagem', 'Graphics'),
+                      T('Salvo em bbport.ini; o menu do jogo (Insert) altera os mesmos valores.',
+                        'Saved in bbport.ini; the in-game menu (Insert) changes the same values.'))
         self.section(f, 'Anti-aliasing', top=4)
-        self.row(f, 'Modo', self.choice(f, 'order_aa', 'ini', AA_MODES),
-                 'DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. DLAA mantém a cena '
-                 'na resolução nativa; os outros modos renderizam a cena menor e reconstroem para a '
-                 'saída (mais FPS). TAA original é o anti-aliasing do PS4.')
-        self.section(f, 'Resolução')
-        self.row(f, 'Resolução do jogo', self.choice(f, 'order_resolution', 'ini', RESOLUTIONS),
-                 'Original: como no PS4, cena em 2.40:1 com faixas pretas e a iluminação correta '
-                 '(recomendado). As opções 16:9 usam os patches do illusion0001 que vieram no '
-                 'executável do dump; em 1080p o próprio autor avisa que há problemas visuais.')
-        self.note(f, 'O jogo foi feito com câmera em 2.40:1 no PS4; o TOport mostra a cena inteira em '
-                     '16:9 (a versão nativa em 1920x800 está prevista).')
+        self.row(f, T('Modo', 'Mode'), self.choice(f, 'order_aa', 'ini', AA_MODES()),
+                 T('DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. DLAA mantém a cena '
+                   'na resolução nativa; os outros modos renderizam a cena menor e reconstroem para a '
+                   'saída (mais FPS). TAA original é o anti-aliasing do PS4.',
+                   "DLSS (NVIDIA RTX) replaces the game's own temporal resolve. DLAA keeps the scene at "
+                   'native resolution; the other modes render a smaller scene and reconstruct it (more '
+                   "FPS). The original TAA is the PS4's anti-aliasing."))
+        self.section(f, T('Resolução', 'Resolution'))
+        self.row(f, T('Resolução do jogo', 'Game resolution'), self.choice(f, 'order_resolution', 'ini', RESOLUTIONS()),
+                 T('Original: como no PS4, cena em 2.40:1 com faixas pretas e a iluminação correta '
+                   '(recomendado). As opções 16:9 usam os patches do illusion0001 que vieram no '
+                   'executável do dump; em 1080p o próprio autor avisa que há problemas visuais.',
+                   'Original: as on PS4, a 2.40:1 scene with black bars and correct lighting '
+                   "(recommended). The 16:9 options use illusion0001's patches found in the dump's "
+                   'executable; at 1080p their author warns of visual issues.'))
 
     def build_display(self):
-        f = self.page('display', 'Tela e desempenho', 'Modo de tela, limite de quadros e carregamento.')
-        self.section(f, 'Tela', top=4)
-        self.row(f, 'Modo de tela', self.choice(f, 'display', 'app', DISPLAY_MODES),
-                 'Sem bordas é o recomendado. Exclusiva troca o modo do monitor.')
-        self.check(f, 'show_fps', 'ini', 'Mostrar FPS no canto')
-        self.section(f, 'Desempenho')
-        self.row(f, 'Limite de quadros', self.choice(f, 'fps_limit', 'ini', FPS_LIMITS),
-                 'F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.')
-        self.check(f, 'fast_loading', 'ini', 'Carregamento acelerado',
-                   'Filas de compute e de leitura sem esperas desnecessárias: texturas e iluminação '
-                   'chegam mais rápido, sem perder elementos da cena.')
-        self.check(f, 'preload_shaders', 'ini', 'Pré-carregar shaders ao abrir',
-                   'Antes de o jogo abrir, monta os shaders usados nas duas últimas sessões: menos '
-                   'travadas ao entrar nas áreas, abertura um pouco mais lenta. Na primeira execução '
-                   'ainda não há cache para carregar.')
+        f = self.page('display', T('Tela e desempenho', 'Display & performance'),
+                      T('Modo de tela, limite de quadros e carregamento.', 'Display mode, frame limit and loading.'))
+        self.section(f, T('Tela', 'Display'), top=4)
+        self.row(f, T('Modo de tela', 'Display mode'), self.choice(f, 'display', 'app', DISPLAY_MODES()),
+                 T('Sem bordas é o recomendado. Exclusiva troca o modo do monitor.',
+                   'Borderless is recommended. Exclusive changes the monitor mode.'))
+        self.check(f, 'show_fps', 'ini', T('Mostrar FPS no canto', 'Show FPS in the corner'))
+        self.section(f, T('Desempenho', 'Performance'))
+        self.row(f, T('Limite de quadros', 'Frame limit'), self.choice(f, 'fps_limit', 'ini', FPS_LIMITS),
+                 T('F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.',
+                   'F9 cycles 30/60/90/120 in game. Some cutscenes were made for 30 FPS.'))
+        self.check(f, 'fast_loading', 'ini', T('Carregamento acelerado', 'Fast loading'),
+                   T('Filas de compute e de leitura sem esperas desnecessárias: texturas e iluminação '
+                     'chegam mais rápido, sem perder elementos da cena.',
+                     'Compute and read queues without needless waits: textures and lighting arrive '
+                     'faster, without losing anything in the scene.'))
+        self.check(f, 'preload_shaders', 'ini', T('Pré-carregar shaders ao abrir', 'Preload shaders at start'),
+                   T('Antes de o jogo abrir, monta os shaders usados nas duas últimas sessões: menos '
+                     'travadas ao entrar nas áreas, abertura um pouco mais lenta. Na primeira execução '
+                     'ainda não há cache para carregar.',
+                     'Before the game opens, builds the shaders used in the last two sessions: fewer '
+                     'stutters entering areas, a slightly slower start. The first run has no cache yet.'))
         self.section(f, 'Launcher')
-        self.check(f, 'close_on_play', 'app', 'Fechar o launcher quando o jogo abrir')
+        self.check(f, 'close_on_play', 'app', T('Fechar o launcher quando o jogo abrir',
+                                                 'Close the launcher when the game opens'))
 
     def build_game(self):
         ttk = self.ttk
-        f = self.page('game', 'Jogo e idioma', 'A pasta do seu dump e as opções do jogo.')
-        self.section(f, 'Pasta do jogo', top=4)
+        f = self.page('game', T('Jogo e idioma', 'Game & language'),
+                      T('A pasta do seu dump e as opções do jogo.', 'Your dump folder and the game options.'))
+        self.section(f, T('Pasta do jogo', 'Game folder'), top=4)
         var = self.var('game_dir', 'app')
         holder = ttk.Frame(f)
         ttk.Entry(holder, textvariable=var, width=54).pack(side='left')
 
         def browse():
             chosen = self.filedialog.askdirectory(
-                title='Pasta do seu dump de The Order: 1886 (CUSA00785)', initialdir=var.get() or str(PORT_DIR))
+                title=T('Pasta do seu dump de The Order: 1886 (CUSA00785)', 'Your The Order: 1886 dump folder (CUSA00785)'), initialdir=var.get() or str(PORT_DIR))
             if chosen:
                 var.set(str(Path(chosen)))
-        ttk.Button(holder, text='Procurar…', command=browse).pack(side='left', padx=(6, 0))
-        ttk.Button(holder, text='Abrir', command=lambda: self.open_path(var.get())).pack(side='left', padx=(6, 0))
+        ttk.Button(holder, text=T('Procurar…', 'Browse…'), command=browse).pack(side='left', padx=(6, 0))
+        ttk.Button(holder, text=T('Abrir', 'Open'), command=lambda: self.open_path(var.get())).pack(side='left', padx=(6, 0))
         self.row(f, 'Dump (CUSA00785)', holder,
-                 'O seu próprio dump, versão 01.02: eboot.bin, sce_sys, sce_module e os dados do jogo. '
-                 'Nenhum arquivo do jogo vem com o TOport.')
-        self.section(f, 'Idioma')
-        self.row(f, 'Idioma do jogo', self.choice(f, 'game_language', 'ini', LANGUAGES),
-                 'Idioma do sistema informado ao jogo: textos e áudio que o disco tiver.')
+                 T('O seu próprio dump, versão 01.02: eboot.bin, sce_sys, sce_module e os dados do jogo. '
+                   'Nenhum arquivo do jogo vem com o TOport.',
+                   'Your own dump, version 01.02: eboot.bin, sce_sys, sce_module and the game data. '
+                   'No game files come with TOport.'))
+        self.section(f, T('Idioma', 'Language'))
+        ui_box = self.choice(f, 'ui_language', 'app', UI_LANGUAGES)
+        self.row(f, T('Idioma do launcher e do menu', 'Launcher and menu language'), ui_box,
+                 T('O launcher reabre no idioma escolhido; o menu do jogo (Insert) usa o mesmo.',
+                   'The launcher reopens in the chosen language; the in-game menu (Insert) uses it too.'))
+        self.var('ui_language', 'app').trace_add('write', lambda *_a: self.root.after(50, self.switch_language))
+        self.row(f, T('Idioma do jogo', 'Game language'), self.choice(f, 'game_language', 'ini', LANGUAGES),
+                 T('Idioma do sistema informado ao jogo: textos e áudio que o disco tiver.',
+                   'System language given to the game: the text and audio on the disc.'))
         self.section(f, 'Extras')
-        self.check(f, 'photo_camera', 'ini', 'Câmera livre nas cutscenes (modo foto)',
-                   'Libera o controle da câmera do modo foto durante as cutscenes.')
-        self.section(f, 'Arquivos')
+        self.check(f, 'photo_camera', 'ini', T('Câmera livre nas cutscenes (modo foto)',
+                                                'Free camera in cutscenes (photo mode)'),
+                   T('Libera o controle da câmera do modo foto durante as cutscenes.',
+                     'Unlocks the photo mode camera during cutscenes.'))
+        self.section(f, T('Arquivos', 'Files'))
         holder = ttk.Frame(f)
-        ttk.Button(holder, text='Abrir pasta do TOport', command=lambda: self.open_path(DATA_DIR)).pack(side='left')
-        ttk.Button(holder, text='Abrir saves', command=lambda: self.open_path(DATA_DIR / 'user')).pack(
+        ttk.Button(holder, text=T('Abrir pasta do TOport', 'Open the TOport folder'), command=lambda: self.open_path(DATA_DIR)).pack(side='left')
+        ttk.Button(holder, text=T('Abrir saves', 'Open saves'), command=lambda: self.open_path(DATA_DIR / 'user')).pack(
             side='left', padx=(6, 0))
-        self.row(f, 'Pastas', holder, 'bbport.ini e toport.json (configurações), user\\ (saves e '
-                                      'cache de shaders), out\\ (jogo preparado), last_run.log.')
+        self.row(f, T('Pastas', 'Folders'), holder,
+                 T('bbport.ini e toport.json (configurações), user\\ (saves e '
+                   'cache de shaders), out\\ (jogo preparado), last_run.log.',
+                   'bbport.ini and toport.json (settings), user\\ (saves and shader cache), '
+                   'out\\ (prepared game), last_run.log.'))
 
     def build_log(self):
         tk, ttk = self.tk, self.ttk
@@ -638,9 +719,9 @@ class Launcher:
         self.pages['log'] = page
         top = ttk.Frame(page)
         top.pack(fill='x', pady=(0, 8))
-        ttk.Label(top, text='Registro', font=('Georgia', 20)).pack(side='left')
-        ttk.Button(top, text='Copiar', command=self.copy_log).pack(side='right')
-        ttk.Button(top, text='Limpar', command=lambda: self.set_log('')).pack(side='right', padx=6)
+        ttk.Label(top, text=T('Registro', 'Log'), font=('Georgia', 20)).pack(side='left')
+        ttk.Button(top, text=T('Copiar', 'Copy'), command=self.copy_log).pack(side='right')
+        ttk.Button(top, text=T('Limpar', 'Clear'), command=lambda: self.set_log('')).pack(side='right', padx=6)
         self.log = tk.Text(page, wrap='none', bg='#0a0908', fg='#cfc6b8', insertbackground=TEXT, relief='flat',
                            font=('Consolas', 9), padx=8, pady=6, state='disabled', highlightthickness=0)
         bar = ttk.Scrollbar(page, command=self.log.yview)
@@ -657,19 +738,46 @@ class Launcher:
         if not (exe.parent / 'SDL3.dll').is_file():
             clang64 = Path(os.environ.get('MSYS2_ROOT', r'C:\msys64')) / 'clang64' / 'bin'
             env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
-        text = '• Placa de vídeo: não verificada'
+        text = T('• Placa de vídeo: não verificada', '• Graphics card: not checked')
         try:
             result = subprocess.run([str(exe), '--live-resolution'], capture_output=True, text=True,
                                     timeout=30, env=env, creationflags=NO_WINDOW)
             names = [line[5:].split(':')[0] for line in result.stderr.splitlines() if line.startswith('GPU: ')]
             if names:
-                text = f'✓ Placa de vídeo: {names[0]}'
+                text = T(f'✓ Placa de vídeo: {names[0]}', f'✓ Graphics card: {names[0]}')
             elif result.returncode:
-                text = '✗ Nenhuma placa com Vulkan 1.3 encontrada (atualize o driver)'
+                text = T('✗ Nenhuma placa com Vulkan 1.3 encontrada (atualize o driver)', '✗ No Vulkan 1.3 graphics card found (update the driver)')
         except (OSError, subprocess.TimeoutExpired):
             pass
         self.gpu_text = text
         self.ui_calls.put(self.refresh_status)
+
+    def check_update(self):
+        """The newest release on GitHub (pre-releases too): a sidebar button when newer."""
+        def parts(tag):
+            try:
+                return tuple(int(x) for x in tag.lstrip('v').split('-')[0].split('.'))
+            except ValueError:
+                return ()
+        try:
+            request = urllib.request.Request(RELEASES_API, headers={'User-Agent': f'TOport/{VERSION}'})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                releases = json.loads(response.read().decode('utf-8'))
+        except (OSError, ValueError):
+            return
+        tags = [r.get('tag_name', '') for r in releases if not r.get('draft')]
+        newest = max(tags, key=parts, default='')
+        if parts(newest) > parts(VERSION):
+            self.ui_calls.put(lambda: self.show_update(newest))
+
+    def show_update(self, tag):
+        if not self.side.winfo_exists():
+            return
+        button = self.tk.Button(self.side, text=T(f'Nova versão {tag} disponível', f'New version {tag} available'),
+                                bg=BLOOD, fg='#f4ece0', activebackground=BLOOD_HI, relief='flat',
+                                font=('Segoe UI', 10, 'bold'), cursor='hand2',
+                                command=lambda: webbrowser.open(f'{RELEASES_PAGE}/tag/{tag}'))
+        button.pack(fill='x', padx=18, pady=(0, 12), before=self.side_note)
 
     def refresh_status(self):
         ok, message = check_game(self.var('game_dir', 'app').get())
@@ -677,17 +785,19 @@ class Launcher:
                                       foreground=TEXT if ok else '#e3b25a')
         saves = DATA_DIR / 'user'
         self.checks['saves'].configure(
-            text='✓ Saves e cache de shaders em ' + str(saves) if saves.is_dir() else
-            '• Primeira execução: o jogo é preparado e os shaders são compilados enquanto você joga')
+            text=T('✓ Saves e cache de shaders em ', '✓ Saves and shader cache in ') + str(saves)
+            if saves.is_dir() else
+            T('• Primeira execução: o jogo é preparado e os shaders são compilados enquanto você joga',
+              '• First run: the game is prepared and shaders compile while you play'))
         self.checks['gpu'].configure(text=self.gpu_text)
         dlss_dir = PORT_DIR / 'bin' if (PORT_DIR / 'bin').is_dir() else PORT_DIR / 'out'
         wants_dlss = self.var('order_aa', 'ini').get() != 'game'
         has_dlss = (dlss_dir / 'nvngx_dlss.dll').is_file() and (dlss_dir / 'bbport_dlss.dll').is_file()
         self.checks['dlss'].configure(
-            text='✓ DLSS instalado' if has_dlss else
-            ('✗ DLSS não encontrado: o jogo usará o TAA original' if wants_dlss else '• DLSS não instalado'))
+            text=T('✓ DLSS instalado', '✓ DLSS installed') if has_dlss else
+            (T('✗ DLSS não encontrado: o jogo usará o TAA original', '✗ DLSS not found: the game will use the original TAA') if wants_dlss else T('• DLSS não instalado', '• DLSS not installed')))
         if not self.process:
-            self.status.configure(text='Pronto.' if ok else 'Escolha a pasta do jogo.', fg=MUTED)
+            self.status.configure(text=T('Pronto.', 'Ready.') if ok else T('Escolha a pasta do jogo.', 'Choose the game folder.'), fg=MUTED)
         self.play_button.configure(state='normal' if ok and not self.process else 'disabled')
 
     def collect(self):
@@ -698,8 +808,21 @@ class Launcher:
                 ini_changes[key] = ('1' if value else '0') if key in INI_FLAGS else value
             else:
                 self.app[key] = value
+        ini_changes['ui_language'] = self.app.get('ui_language', UI_LANG)
         write_ini(ini_changes)
         write_launcher(self.app)
+
+    def switch_language(self):
+        global UI_LANG
+        new = self.var('ui_language', 'app').get()
+        if new == UI_LANG or self.process:
+            return
+        self.collect()
+        UI_LANG = new
+        root = self.root
+        for child in root.winfo_children():
+            child.destroy()
+        Launcher(root)
 
     def open_path(self, path):
         try:
@@ -723,7 +846,7 @@ class Launcher:
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
         except OSError as error:
-            self.append(f'Não foi possível iniciar: {error}\n')
+            self.append(T(f'Não foi possível iniciar: {error}\n', f'Could not start: {error}\n'))
             self.process = None
             return
         self.job = GameJob(self.process)
@@ -731,9 +854,11 @@ class Launcher:
         threading.Thread(target=self.read_output, args=(self.process,), daemon=True).start()
         self.play_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
-        self.status.configure(text='Preparando o jogo e pré-carregando shaders; ele abre na própria '
-                                   'janela…' if self.var('preload_shaders', 'ini').get() else
-                              'Preparando o jogo; ele abre na própria janela…', fg=GOLD)
+        self.status.configure(text=T('Preparando o jogo e pré-carregando shaders; ele abre na própria '
+                                     'janela…', 'Preparing the game and preloading shaders; it opens in '
+                                     'its own window…') if self.var('preload_shaders', 'ini').get() else
+                              T('Preparando o jogo; ele abre na própria janela…',
+                                'Preparing the game; it opens in its own window…'), fg=GOLD)
         if self.app.get('close_on_play'):
             self.root.after(5000, self.root.destroy)
 
@@ -749,7 +874,7 @@ class Launcher:
             for _i in range(500):
                 item = self.output.get_nowait()
                 if isinstance(item, tuple):
-                    self.append(f'\n— o jogo terminou (código {item[0]:#x}) —\n')
+                    self.append(T(f'\n— o jogo terminou (código {item[0]:#x}) —\n', f'\n— the game exited (code {item[0]:#x}) —\n'))
                     self.process = None
                     if self.job:
                         self.job.close()
@@ -762,11 +887,11 @@ class Launcher:
                     if getattr(self, 'log_file', None):
                         self.log_file.write(item)
                     if 'Pipeline cache:' in item and 'built at start' in item:
-                        self.status.configure(text='Shaders pré-carregados; abrindo o jogo…', fg=GOLD)
+                        self.status.configure(text=T('Shaders pré-carregados; abrindo o jogo…', 'Shaders preloaded; opening the game…'), fg=GOLD)
                     elif 'Entering original x86-64 code' in item:
-                        self.status.configure(text='O jogo está rodando.', fg=GOLD)
+                        self.status.configure(text=T('O jogo está rodando.', 'The game is running.'), fg=GOLD)
                     elif 'restarting through run.py' in item:
-                        self.status.configure(text='Reiniciando com as novas configurações…', fg=GOLD)
+                        self.status.configure(text=T('Reiniciando com as novas configurações…', 'Restarting with the new settings…'), fg=GOLD)
                     self.append(item)
         except queue.Empty:
             pass

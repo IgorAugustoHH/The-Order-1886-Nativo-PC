@@ -105,6 +105,7 @@ struct Values {
     std::atomic<bool> photo_camera{true};        ///< free photo camera in cutscenes
     std::atomic<bool> fast_loading{true};        ///< compute pipe parts ade + command pipe
     std::atomic<bool> preload_shaders{true};     ///< build last sessions' pipelines at start
+    std::atomic<bool> ui_english{false};         ///< menu language: ui_language=en (launcher)
     std::atomic<unsigned> fps_limit{60};         ///< 30/60/90/120; F9 cycles it, applied live
     int startup_order_aa = OrderAaQuality;
     int startup_order_resolution = 800;

@@ -187,6 +187,11 @@ void OrderCombo(const char* id, const char* label, std::atomic<T>& value,
     ImGui::PopID();
 }
 
+/// TOport: the menu in the language chosen in the launcher (bbport.ini ui_language).
+const char* L(const char* pt, const char* en) {
+    return BbSettings::Get().ui_english.load() ? en : pt;
+}
+
 void Menu() {
     auto& s = BbSettings::Get();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -195,7 +200,7 @@ void Menu() {
                             ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(620.0f * base_scale, 0.0f), ImGuiCond_Appearing);
     bool keep_open = true;
-    if (!ImGui::Begin("The Order: 1886 — TOport (Insert / Select)", &keep_open,
+    if (!ImGui::Begin("The Order: 1886 — TOport (Insert)", &keep_open,
                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
@@ -203,68 +208,68 @@ void Menu() {
     ImGui::Text("%.0f FPS  (%.1f ms)", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
                 frame_ms_avg);
 
-    ImGui::SeparatorText("Imagem");
+    ImGui::SeparatorText(L("Imagem", "Graphics"));
     static const int aa_values[] = {BbSettings::OrderAaGame,        BbSettings::OrderAaDlaa,
                                     BbSettings::OrderAaQuality,     BbSettings::OrderAaBalanced,
                                     BbSettings::OrderAaPerformance, BbSettings::OrderAaUltra};
-    static const char* const aa_names[] = {"TAA original do jogo", "DLSS DLAA (resolução nativa)",
-                                           "DLSS Qualidade", "DLSS Equilibrado",
-                                           "DLSS Desempenho", "DLSS Ultra Desempenho"};
+    const char* const aa_names[] = {L("TAA original do jogo", "The game's original TAA"), L("DLSS DLAA (resolução nativa)", "DLSS DLAA (native resolution)"),
+                                           L("DLSS Qualidade", "DLSS Quality"), L("DLSS Equilibrado", "DLSS Balanced"),
+                                           L("DLSS Desempenho", "DLSS Performance"), L("DLSS Ultra Desempenho", "DLSS Ultra Performance")};
     OrderCombo("aa", "Anti-aliasing", s.order_aa, aa_values, aa_names);
-    Hint("DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. Abaixo de DLAA, a cena é renderizada menor e reconstruída. Reinicie para aplicar.");
+    Hint(L("DLSS (NVIDIA RTX) substitui a resolução temporal do próprio jogo. Abaixo de DLAA, a cena é renderizada menor e reconstruída. Reinicie para aplicar.", "DLSS (NVIDIA RTX) replaces the game's own temporal resolve. Below DLAA the scene is rendered smaller and reconstructed. Restart to apply."));
     if (s.order_aa != BbSettings::OrderAaGame && s.dlss_problem.load()) {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "DLSS: %s", s.dlss_problem.load());
     }
     // 4K (BB_ORDER_RESOLUTION=2160, the game's -use4K branch) is left out: artifacts on PC.
     static const int resolution_values[] = {800, 1080, 720};
-    static const char* const resolution_names[] = {"Original do PS4: 1920 x 800 (2.40:1)",
-                                                   "1920 x 1080 tela cheia (16:9)",
-                                                   "1280 x 720 tela cheia (16:9)"};
-    OrderCombo("res", "Resolução do jogo", s.order_resolution, resolution_values,
+    const char* const resolution_names[] = {L("Original do PS4: 1920 x 800 (2.40:1)", "PS4 original: 1920 x 800 (2.40:1)"),
+                                                   L("1920 x 1080 tela cheia (16:9)", "1920 x 1080 full screen (16:9)"),
+                                                   L("1280 x 720 tela cheia (16:9)", "1280 x 720 full screen (16:9)")};
+    OrderCombo("res", L("Resolução do jogo", "Game resolution"), s.order_resolution, resolution_values,
                resolution_names);
-    Hint("Original: como no PS4, cena em 2.40:1 com faixas pretas, e a iluminação correta. As opções 16:9 usam os patches do illusion0001 que vieram no executável do dump; o autor avisa que 1080p em 16:9 tem problemas visuais. Reinicie para aplicar.");
+    Hint(L("Original: como no PS4, cena em 2.40:1 com faixas pretas, e a iluminação correta. As opções 16:9 usam os patches do illusion0001 que vieram no executável do dump; o autor avisa que 1080p em 16:9 tem problemas visuais. Reinicie para aplicar.", "Original: as on PS4, a 2.40:1 scene with black bars and correct lighting. The 16:9 options use illusion0001's patches found in the dump's executable; their author warns that 16:9 at 1080p has visual issues. Restart to apply."));
 
-    ImGui::SeparatorText("Desempenho");
+    ImGui::SeparatorText(L("Desempenho", "Performance"));
     static const unsigned fps_values[] = {30, 60, 90, 120};
     static const char* const fps_names[] = {"30 FPS", "60 FPS", "90 FPS", "120 FPS"};
-    OrderCombo("fps", "Limite de quadros (F9)", s.fps_limit, fps_values, fps_names);
-    Hint("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.");
-    OrderCheckbox("fast", "Carregamento acelerado", s.fast_loading);
-    Hint("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.");
-    OrderCheckbox("preload", "Pré-carregar shaders ao abrir", s.preload_shaders);
-    Hint("Monta, antes de o jogo abrir, os shaders usados nas duas últimas sessões: menos travadas ao entrar nas áreas, abertura um pouco mais lenta. Reinicie para aplicar.");
+    OrderCombo("fps", L("Limite de quadros (F9)", "Frame limit (F9)"), s.fps_limit, fps_values, fps_names);
+    Hint(L("Aplicado na hora. F9 alterna 30/60/90/120 durante o jogo. Algumas cutscenes foram feitas para 30 FPS.", "Applied immediately. F9 cycles 30/60/90/120 in game. Some cutscenes were made for 30 FPS."));
+    OrderCheckbox("fast", L("Carregamento acelerado", "Fast loading"), s.fast_loading);
+    Hint(L("Filas de compute e de leitura sem esperas desnecessárias: recursos e iluminação chegam mais rápido, sem perder elementos da cena. Reinicie para aplicar.", "Compute and read queues without needless waits: resources and lighting arrive faster, without losing anything in the scene. Restart to apply."));
+    OrderCheckbox("preload", L("Pré-carregar shaders ao abrir", "Preload shaders at start"), s.preload_shaders);
+    Hint(L("Monta, antes de o jogo abrir, os shaders usados nas duas últimas sessões: menos travadas ao entrar nas áreas, abertura um pouco mais lenta. Reinicie para aplicar.", "Builds the shaders used in the last two sessions before the game opens: fewer stutters entering areas, a slightly slower start. Restart to apply."));
 
-    ImGui::SeparatorText("Jogo");
+    ImGui::SeparatorText(L("Jogo", "Game"));
     static int language_values[std::size(BbSettings::GameLanguages)];
     static const char* language_names[std::size(BbSettings::GameLanguages)];
     for (size_t i = 0; i < std::size(BbSettings::GameLanguages); ++i) {
         language_values[i] = BbSettings::GameLanguages[i].code;
         language_names[i] = BbSettings::GameLanguages[i].name;
     }
-    OrderCombo("lang", "Idioma do jogo", s.game_language, language_values, language_names);
-    Hint("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.");
-    OrderCheckbox("photo", "Câmera livre nas cutscenes (modo foto)", s.photo_camera);
-    Hint("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.");
+    OrderCombo("lang", L("Idioma do jogo", "Game language"), s.game_language, language_values, language_names);
+    Hint(L("Idioma do sistema informado ao jogo (textos e áudio que o disco tiver). Reinicie para aplicar.", "System language given to the game (the text and audio on the disc). Restart to apply."));
+    OrderCheckbox("photo", L("Câmera livre nas cutscenes (modo foto)", "Free camera in cutscenes (photo mode)"), s.photo_camera);
+    Hint(L("Libera o controle da câmera do modo foto durante as cutscenes. Reinicie para aplicar.", "Unlocks the photo mode camera during cutscenes. Restart to apply."));
 
-    ImGui::SeparatorText("Tela");
-    OrderCheckbox("showfps", "Mostrar FPS no canto", s.show_fps);
+    ImGui::SeparatorText(L("Tela", "Display"));
+    OrderCheckbox("showfps", L("Mostrar FPS no canto", "Show FPS in the corner"), s.show_fps);
 
     if (BbSettings::OrderNeedsRestart()) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
-                           "As alterações serão aplicadas após reiniciar");
-        if (ImGui::Button("Aplicar e reiniciar o jogo")) {
+                           L("As alterações serão aplicadas após reiniciar", "Changes apply after a restart"));
+        if (ImGui::Button(L("Aplicar e reiniciar o jogo", "Apply and restart the game"))) {
             BbSettings::Save();
             runtime_restart();
         }
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Fechar")) {
+    if (ImGui::Button(L("Fechar", "Close"))) {
         keep_open = false;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("As configurações são salvas ao fechar o menu");
+    ImGui::TextDisabled(L("As configurações são salvas ao fechar o menu", "Settings are saved when the menu closes"));
     ImGui::End();
     if (!keep_open) {
         SetOpen(false);
@@ -389,7 +394,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
         return;
     }
     initialized = true;
-    std::printf("Overlay: menu ready (Insert or Select)\n");
+    std::printf("Overlay: menu ready (Insert)\n");
 }
 
 void UpdateTextInput(SDL_Window* window) {
@@ -438,14 +443,9 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
         const u8 button = event.gbutton.button;
-        // TOport: Select / Share (SDL "back") toggles the menu; The Order uses L3+R3 together
-        // in play, so that combination stays the game's.
-        if (button == SDL_GAMEPAD_BUTTON_BACK) {
-            if (down) {
-                SetOpen(!is_open);
-            }
-            return true;
-        }
+        // TOport: the menu opens with Insert only. The Order uses L3+R3 in play and the
+        // touchpad / Select button for its photo mode, so every controller button stays the
+        // game's (navigation keys below act only while the menu is open).
         if (!is_open) {
             return false;
         }

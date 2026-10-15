@@ -82,6 +82,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fast_loading = i != 0;
     } else if (key == "preload_shaders") {
         v.preload_shaders = i != 0;
+    } else if (key == "ui_language") {
+        v.ui_english = value == "en";
     } else if (key == "fps_limit") {
         v.fps_limit = i <= 30 ? 30u : i <= 60 ? 60u : i <= 90 ? 90u : 120u;
     } else if (key == "output_res") {
@@ -229,7 +231,7 @@ void Save() {
         return;
     }
     std::fprintf(file,
-                 "# bbport settings (in-game menu: Insert / Select)\n"
+                 "# bbport settings (in-game menu: Insert)\n"
                  "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\njitter=%d\n"
                  "reactive=%d\nobject_motion=%d\nreactive_scale=%.2f\nreactive_threshold=%.2f\nreactive_max=%.2f\n"
                  "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n",
@@ -252,13 +254,13 @@ void Save() {
     // TOport: read by run.py at start (environment for the renderer, patches and runtime).
     std::fprintf(file,
                  "order_aa=%s\norder_resolution=%s\ngame_language=%d\nphoto_camera=%d\n"
-                 "fast_loading=%d\nfps_limit=%u\npreload_shaders=%d\n",
+                 "fast_loading=%d\nfps_limit=%u\npreload_shaders=%d\nui_language=%s\n",
                  OrderAaName(v.order_aa),
                  v.order_resolution == 800 ? "retail"
                  : v.order_resolution == 720 ? "720" : "1080",
                  v.game_language.load(),
                  int(v.photo_camera.load()), int(v.fast_loading.load()), v.fps_limit.load(),
-                 int(v.preload_shaders.load()));
+                 int(v.preload_shaders.load()), v.ui_english.load() ? "en" : "pt");
     std::fclose(file);
 }
 

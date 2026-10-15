@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/TOport/ (and dist/TOport.zip): TOport.exe (the The Order: 1886 launcher, frozen
+# Builds dist/TOport/ (and dist/TOport-Windows.zip): TOport.exe (the The Order: 1886 launcher, frozen
 # with PyInstaller so players need no Python), bb-probe.exe with the MSYS2 CLANG64 DLLs it needs,
 # DLSS, the preparation scripts and run.py. No game files: the player points TOport.exe to
 # their own dump (CUSA00785 01.02). Run from an MSYS2 CLANG64 shell after `bash build.sh`.
@@ -55,9 +55,9 @@ else
 fi
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 mkdir -p dist
-rm -f dist/TOport.zip
+rm -f dist/TOport-Windows.zip
 (cd out/stage && powershell -NoProfile -Command \
-    "Compress-Archive -Path TOport -DestinationPath ../../dist/TOport.zip")
+    "Compress-Archive -Path TOport -DestinationPath ../../dist/TOport-Windows.zip")
 
 # Refresh dist/TOport, keeping what players create there (saves, settings, prepared game).
 play=dist/TOport
@@ -71,4 +71,4 @@ else
         ! -name toport.json ! -name toggles.txt -exec rm -rf {} +
     cp -r "$dest/." "$play/"
 fi
-du -sh "$dest" dist/TOport.zip
+du -sh "$dest" dist/TOport-Windows.zip

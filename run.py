@@ -93,7 +93,7 @@ TOPORT_DEFAULTS = {
 }
 
 # A new bbport.ini starts from the settings of the approved runs (teste-mira/pt-dlss.ini).
-TOPORT_INI = '''# bbport settings (in-game menu: Insert / Select)
+TOPORT_INI = '''# bbport settings (in-game menu: Insert)
 upscaler=dlss
 preset=3
 sharpen=1
