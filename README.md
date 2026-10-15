@@ -90,7 +90,8 @@ Abra uma [issue](https://github.com/IgorAugustoHH/The-Order-1886-Nativo-PC/issue
 - "PlayStation", "PS4" e os respectivos logotipos são marcas registradas da Sony Interactive
   Entertainment Inc. "The Order: 1886" é marca da Sony Interactive Entertainment LLC. Todas as
   outras marcas pertencem aos seus donos.
-- **Nenhum arquivo do jogo é distribuído**: nem executável, nem dados, nem shaders, nem imagens.
+- **Nenhum arquivo do jogo é distribuído**: nem executável, nem dados, nem shaders, nem artes
+  extraídas do disco. As imagens do launcher e deste README são capturas do TOport rodando.
   O cache de shaders é gerado na máquina de cada jogador.
 - Este repositório não contém nem ensina a contornar proteções de cópia.
 - O software é fornecido "como está", sem garantias. Use por sua conta e risco.

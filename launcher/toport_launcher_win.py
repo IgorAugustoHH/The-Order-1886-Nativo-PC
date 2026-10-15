@@ -14,6 +14,7 @@ so a packaged port needs no Python installation.
 """
 import ctypes
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -589,7 +590,11 @@ class Launcher:
         c = self.banner
         c.delete('all')
         w, h = max(c.winfo_width(), 400), int(c['height'])
-        art = Path(self.var('game_dir', 'app').get() or '.') / 'sce_sys' / 'pic0.png'
+        # The banner ships with the launcher (a TOport screenshot, launcher/banner.png); the dump's
+        # own cover art (sce_sys/pic0.png) is the fallback.
+        art = ASSETS / 'banner.png'
+        if not art.is_file():
+            art = Path(self.var('game_dir', 'app').get() or '.') / 'sce_sys' / 'pic0.png'
         if self.banner_source != art or self.banner_size != w:
             self.banner_source, self.banner_size, self.banner_scaled = art, w, None
             try:
@@ -601,8 +606,16 @@ class Launcher:
             except (ImportError, OSError):
                 try:
                     image = self.tk.PhotoImage(file=str(art))
-                    factor = max(1, round(image.width() / max(w, 1)))
-                    self.banner_scaled = image.subsample(factor) if factor > 1 else image
+                    # Tk scales by integer zoom/subsample only: the smallest a/b (b <= 4) that still
+                    # covers the banner's width.
+                    ratio = w / image.width()
+                    zoom, sub = max(1, math.ceil(ratio)), 1
+                    for b in range(2, 5):
+                        a = max(1, math.ceil(ratio * b))
+                        if a / b < zoom / sub:
+                            zoom, sub = a, b
+                    scaled = image.zoom(zoom) if zoom > 1 else image
+                    self.banner_scaled = scaled.subsample(sub) if sub > 1 else scaled
                 except (self.tk.TclError, OSError):
                     pass
         if self.banner_scaled:
