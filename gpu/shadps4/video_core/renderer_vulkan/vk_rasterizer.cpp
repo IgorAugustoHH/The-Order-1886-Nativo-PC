@@ -234,10 +234,6 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       pipeline_cache{instance, scheduler, liverpool, buffer_cache.GetSparsePageShift()},
       host_markers_enabled{EmulatorSettings.IsVkHostMarkersEnabled()},
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
-    if (Shader::g_null_stale_tsharps || Shader::g_spec_user_data) {
-        std::printf("Port fixes (theorder1886-port): null stale T#s %d, VS start user data %d (test)\n",
-                    int(Shader::g_null_stale_tsharps), int(Shader::g_spec_user_data));
-    }
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
