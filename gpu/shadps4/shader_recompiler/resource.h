@@ -116,9 +116,11 @@ using BufferResourceList = boost::container::static_vector<BufferResource, NUM_B
 
 /// Test switches from mateussmeneses/theorder1886-port (GPL-2.0): BB_NULL_STALE_TSHARP=1 and
 /// BB_SPEC_USER_DATA=1, read at start (before any shader is specialized or loaded).
+/// On by default since run185/186 (same scene: 240 -> 36 ms median worst frame per 5 s,
+/// 0x804aeead permutations ~11.4 -> ~4.7 per 5 s, +9 FPS in heavy scenes); =0 turns it off.
 inline const bool g_null_stale_tsharps = [] {
     const char* e = std::getenv("BB_NULL_STALE_TSHARP");
-    return e && e[0] == '1';
+    return !(e && e[0] == '0');
 }();
 inline const bool g_spec_user_data = [] {
     const char* e = std::getenv("BB_SPEC_USER_DATA");
