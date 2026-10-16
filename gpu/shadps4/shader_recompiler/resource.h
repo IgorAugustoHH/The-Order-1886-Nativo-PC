@@ -7,6 +7,9 @@
 #include "shader_recompiler/ir/type.h"
 #include "video_core/amdgpu/resource.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <bit>
 #include <boost/container/static_vector.hpp>
 
 namespace Shader {
@@ -111,6 +114,17 @@ struct BufferResource {
 };
 using BufferResourceList = boost::container::static_vector<BufferResource, NUM_BUFFERS>;
 
+/// Test switches from mateussmeneses/theorder1886-port (GPL-2.0): BB_NULL_STALE_TSHARP=1 and
+/// BB_SPEC_USER_DATA=1, read at start (before any shader is specialized or loaded).
+inline const bool g_null_stale_tsharps = [] {
+    const char* e = std::getenv("BB_NULL_STALE_TSHARP");
+    return e && e[0] == '1';
+}();
+inline const bool g_spec_user_data = [] {
+    const char* e = std::getenv("BB_SPEC_USER_DATA");
+    return e && e[0] == '1';
+}();
+
 enum class MipStorageFallbackMode : u16 {
     None,
     DynamicIndex,
@@ -140,7 +154,16 @@ struct ImageResource {
             image.type = u64(AmdGpu::ImageType::Color2DArray);
             image.depth = (image.depth + 1) * 6 - 1;
         }
-        if (!image.Valid()) {
+        // BB_NULL_STALE_TSHARP=1 (from theorder1886-port): stale T#s left in slots a dispatch
+        // does not sample (the material/lighting compute 0x804aeead) carry garbage: no format,
+        // an empty mip range, a null page, impossible sizes, a cube without the array bit.
+        // Reading them as Null keeps their random view types out of the specialization, where
+        // each combination cost a new permutation and a synchronous compile (~200 ms stutters).
+        if (!image.Valid() ||
+            (g_null_stale_tsharps &&
+             (image.Address() < 0x10000 || image.Address() >= (1ULL << 40) ||
+              image.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid ||
+              image.base_level > image.last_level || !Plausible(image)))) {
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();
@@ -150,6 +173,31 @@ struct ImageResource {
             }
         }
         return image;
+    }
+
+    /// What a stale T# shows that a texture the shader samples cannot (theorder1886-port).
+    constexpr bool Plausible(const AmdGpu::Image& image) const {
+        const u64 width = image.width, height = image.height;
+        const u64 layers = image.NumLayers();
+        if (width >= 8192 || height >= 8192 || layers > 2048 ||
+            width * height * layers > (256u << 20) ||
+            (layers > 16 && (width >= 2048 || height >= 2048))) {
+            return false;
+        }
+        const bool is_3d = image.GetType() == AmdGpu::ImageType::Color3D;
+        if (image.NumSamples() <= 1) {
+            const u64 depth = is_3d ? u64(image.depth) + 1 : 1;
+            const u32 levels = std::bit_width(std::max({width + 1, height + 1, depth}));
+            if (image.base_level >= levels) {
+                return false;
+            }
+        }
+        // A cube is sampled as an array (MIMG DA bit), a 3D image never is. Only for plain
+        // sampling: a size query need not set the bit.
+        if (!is_written && !is_atomic && !needs_native) {
+            return image.IsCube() ? is_array : !(is_3d && is_array);
+        }
+        return true;
     }
 
     constexpr bool Fetch(const u32* flatbuf, AmdGpu::Image* out) const {

@@ -376,7 +376,12 @@ struct StageSpecialization {
         // handles this case and prevents generation of redundant permutations. This is also safe
         // for other types of shaders with no bindings.
         if (bitset.none() && other.bitset.none()) {
-            return true;
+            // BB_SPEC_USER_DATA=1 (from theorder1886-port): its user data registers are still
+            // read from the push constants at start.user_data. A fullscreen clear VS reusing the
+            // permutation compiled after a fragment shader without user data read the wrong
+            // register and drew nowhere (a fog buffer kept the loading screen there).
+            return !g_spec_user_data || start.user_data == other.start.user_data ||
+                   !info->ud_mask.mask;
         }
 
         if (start != other.start) {
